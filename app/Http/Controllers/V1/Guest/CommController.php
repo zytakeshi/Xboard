@@ -30,10 +30,39 @@ class CommController extends Controller
             'logo' => admin_setting('logo'),
             // 保持向后兼容
             'is_recaptcha' => (int) admin_setting('captcha_enable', 0) ? 1 : 0,
+            // Payment visibility configuration for H5 payments
+            'payment_config' => $this->getPaymentConfig(),
         ];
 
         $data = HookManager::filter('guest_comm_config', $data);
 
         return $this->success($data);
+    }
+
+    /**
+     * Get payment visibility configuration for H5 payments
+     * 
+     * @return array Payment configuration settings
+     */
+    private function getPaymentConfig()
+    {
+        $configPath = storage_path('app/payment_visibility.json');
+        $defaultConfig = [
+            'h5_payment_enabled' => 1,
+            'h5_payment_regions' => ['US'],
+            'h5_payment_blocked_regions' => [],
+            'config_version' => '1.0.0',
+            'fallback_behavior' => 'hide'
+        ];
+        
+        if (file_exists($configPath)) {
+            $fileContent = file_get_contents($configPath);
+            $config = json_decode($fileContent, true);
+            if ($config && is_array($config)) {
+                return array_merge($defaultConfig, $config);
+            }
+        }
+        
+        return $defaultConfig;
     }
 }

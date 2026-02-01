@@ -1,0 +1,7 @@
+{
+  "h5_payment_enabled": true,
+  "h5_payment_regions": ["US"],
+  "h5_payment_blocked_regions": [],
+  "config_version": "1.0.0",
+  "fallback_behavior": "hide"
+}
