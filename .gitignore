@@ -32,3 +32,9 @@ docker-compose.yaml
 bun.lockb
 compose.yaml
 .scribe
+xboardTest/*
+用户隔离工具包/*
+isolationtools/*
+docs/*
+*.md
+*.json
