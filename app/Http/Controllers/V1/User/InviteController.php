@@ -10,6 +10,7 @@ use App\Models\CommissionLog;
 use App\Models\InviteCode;
 use App\Models\Order;
 use App\Models\User;
+use App\Utils\Dict;
 use App\Utils\Helper;
 use Illuminate\Http\Request;
 
@@ -73,6 +74,20 @@ class InviteController extends Controller
         $data = [
             'codes' => InviteCodeResource::collection($user->codes),
             'stat' => $stat
+        ];
+        return $this->success($data);
+    }
+
+    public function withdrawConfig()
+    {
+        // Get limit in yuan from settings and convert to cents for consistency with other balance fields
+        $withdrawLimitYuan = (int)admin_setting('commission_withdraw_limit', 100);
+        $withdrawLimitCents = $withdrawLimitYuan * 100;
+        
+        $data = [
+            'commission_withdraw_limit' => $withdrawLimitCents,  // Return in cents like other balance fields
+            'withdraw_methods' => admin_setting('commission_withdraw_method', Dict::WITHDRAW_METHOD_WHITELIST_DEFAULT),
+            'withdraw_close' => (bool)admin_setting('withdraw_close_enable', 0)
         ];
         return $this->success($data);
     }

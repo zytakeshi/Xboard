@@ -38,3 +38,5 @@ isolationtools/*
 docs/*
 *.md
 *.json
+.vpncheapCredentials
+storage/app/api_failover_domains.txt

@@ -348,8 +348,18 @@ class OrderService
         if ($this->user->expired_at === NULL)
             app(TrafficResetService::class)->performReset($this->user, TrafficResetLog::SOURCE_ORDER);
         // 新购
-        if ($order->type === Order::TYPE_NEW_PURCHASE)
+        if ($order->type === Order::TYPE_NEW_PURCHASE) {
             app(TrafficResetService::class)->performReset($this->user, TrafficResetLog::SOURCE_ORDER);
+            // Only reset to current time if user has no previous paid orders
+            // (first paid purchase - don't extend from free plan expiration)
+            $hasPreviousPaidOrders = Order::where('user_id', $this->user->id)
+                ->where('id', '!=', $order->id)
+                ->where('status', Order::STATUS_COMPLETED)
+                ->exists();
+            if (!$hasPreviousPaidOrders) {
+                $this->user->expired_at = time();
+            }
+        }
         $this->user->plan_id = $plan->id;
         $this->user->group_id = $plan->group_id;
         $this->user->expired_at = $this->getTime($order->period, $this->user->expired_at);

@@ -36,6 +36,7 @@ class UserRoute
             $router->post('/getQuickLoginUrl', [UserController::class, 'getQuickLoginUrl']);
             $router->get('/getActiveSession', [UserController::class, 'getActiveSession']);
             $router->post('/removeActiveSession', [UserController::class, 'removeActiveSession']);
+            $router->post('/deactivateAccount', [UserController::class, 'deactivateAccount']);
             // Order
             $router->post('/order/save', [OrderController::class, 'save']);
             $router->post('/order/checkout', [OrderController::class, 'checkout']);
@@ -50,6 +51,7 @@ class UserRoute
             $router->get('/invite/save', [InviteController::class, 'save']);
             $router->get('/invite/fetch', [InviteController::class, 'fetch']);
             $router->get('/invite/details', [InviteController::class, 'details']);
+            $router->get('/invite/withdrawConfig', [InviteController::class, 'withdrawConfig']);
             // Notice
             $router->get('/notice/fetch', [NoticeController::class, 'fetch']);
             // Ticket

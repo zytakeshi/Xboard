@@ -131,6 +131,7 @@ class UserController extends Controller
     {
         $user = User::where('id', $request->user()->id)
             ->select([
+                'id',
                 'plan_id',
                 'token',
                 'expired_at',
@@ -216,5 +217,70 @@ class UserController extends Controller
 
         $url = $this->loginService->generateQuickLoginUrl($user, $request->input('redirect'));
         return $this->success($url);
+    }
+
+    /**
+     * Deactivate user account (soft delete using banned field)
+     * 
+     * @param Request $request
+     * @return \Illuminate\Http\JsonResponse
+     */
+    public function deactivateAccount(Request $request)
+    {
+        // Validate password for security
+        $request->validate([
+            'password' => 'required|string',
+        ]);
+
+        $user = User::find($request->user()->id);
+        if (!$user) {
+            return $this->fail([400, __('The user does not exist')]);
+        }
+
+        // Check if user is admin or staff - prevent deactivation
+        if ($user->is_admin || $user->is_staff) {
+            return $this->fail([403, __('Admin and staff accounts cannot be deactivated')]);
+        }
+
+        // Verify password
+        if (!password_verify($request->input('password'), $user->password)) {
+            return $this->fail([401, __('Invalid password')]);
+        }
+
+        try {
+            // Mark account as banned (deactivated)
+            $user->banned = 1;
+            
+            // Clear sensitive data
+            $user->token = Helper::guid(); // Reset token to prevent reuse
+            $user->uuid = Helper::guid(); // Reset UUID to invalidate subscriptions
+            
+            // Optional: Clear commission balance to prevent withdrawal after deactivation
+            // $user->commission_balance = 0;
+            
+            // Save changes
+            $user->save();
+
+            // Revoke all API tokens to force logout
+            $user->tokens()->delete();
+
+            // Log the deactivation for audit purposes
+            \Log::info('User account deactivated', [
+                'user_id' => $user->id,
+                'email' => $user->email,
+                'timestamp' => now(),
+                'ip' => $request->ip(),
+            ]);
+
+            return $this->success([
+                'message' => __('Account has been successfully deactivated'),
+            ]);
+        } catch (\Exception $e) {
+            \Log::error('Account deactivation failed', [
+                'user_id' => $user->id,
+                'error' => $e->getMessage(),
+            ]);
+            return $this->fail([500, __('Failed to deactivate account')]);
+        }
     }
 }
