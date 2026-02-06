@@ -9,7 +9,7 @@ use App\Support\AbstractProtocol;
 
 class SingBox extends AbstractProtocol
 {
-    public $flags = ['sing-box', 'hiddify', 'sfm'];
+    public $flags = ['sing-box', 'hiddify', 'sfm', 'vpncheap'];
     private $config;
     const CUSTOM_TEMPLATE_FILE = 'resources/rules/custom.sing-box.json';
     const DEFAULT_TEMPLATE_FILE = 'resources/rules/default.sing-box.json';
