@@ -12,6 +12,7 @@ use App\Services\Plugin\HookManager;
 use App\Utils\Helper;
 use Illuminate\Support\Facades\DB;
 use Illuminate\Support\Facades\Log;
+use Illuminate\Support\Facades\Schema;
 
 class OrderService
 {
@@ -334,6 +335,25 @@ class OrderService
 
     private function setDeviceLimit($deviceLimit)
     {
+        static $hasDeviceLimitColumn = null;
+        static $loggedMissingColumn = false;
+
+        if ($hasDeviceLimitColumn === null) {
+            $hasDeviceLimitColumn = Schema::hasColumn('v2_user', 'device_limit');
+        }
+
+        if (!$hasDeviceLimitColumn) {
+            if (!$loggedMissingColumn) {
+                Log::warning('Skip updating user device_limit because v2_user.device_limit is missing', [
+                    'order_id' => $this->order->id ?? null,
+                    'trade_no' => $this->order->trade_no ?? null,
+                    'user_id' => $this->user->id ?? null
+                ]);
+                $loggedMissingColumn = true;
+            }
+            return;
+        }
+
         $this->user->device_limit = $deviceLimit;
     }
 
