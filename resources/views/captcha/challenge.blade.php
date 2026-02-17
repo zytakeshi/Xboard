@@ -83,9 +83,9 @@
     @if ($captchaType === 'turnstile')
         <script src="https://challenges.cloudflare.com/turnstile/v0/api.js" async defer></script>
     @elseif ($captchaType === 'recaptcha')
-        <script src="https://www.google.com/recaptcha/api.js" async defer></script>
+        <script src="https://www.recaptcha.net/recaptcha/api.js" async defer></script>
     @elseif ($captchaType === 'recaptcha-v3')
-        <script src="https://www.google.com/recaptcha/api.js?render={{ $siteKey }}" async defer></script>
+        <script src="https://www.recaptcha.net/recaptcha/api.js?render={{ $siteKey }}" async defer></script>
     @endif
 </head>
 <body>

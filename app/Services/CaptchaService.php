@@ -8,10 +8,12 @@ use Illuminate\Support\Facades\Cache;
 use Illuminate\Support\Facades\Http;
 use Illuminate\Support\Str;
 use ReCaptcha\ReCaptcha;
+use ReCaptcha\RequestMethod\Post as RecaptchaPost;
 
 class CaptchaService
 {
     private const CAPTCHA_SESSION_TTL_SECONDS = 300;
+    private const RECAPTCHA_SITEVERIFY_URL = 'https://www.recaptcha.net/recaptcha/api/siteverify';
 
     /**
      * 验证人机验证码
@@ -297,7 +299,7 @@ class CaptchaService
             return [false, [500, __('reCAPTCHA v3 is not configured')]];
         }
 
-        $recaptcha = new ReCaptcha($secret);
+        $recaptcha = new ReCaptcha($secret, new RecaptchaPost(self::RECAPTCHA_SITEVERIFY_URL));
         $recaptchaResp = $recaptcha->verify($token, $ip);
 
         if (!$recaptchaResp->isSuccess()) {
@@ -320,7 +322,7 @@ class CaptchaService
             return [false, [500, __('reCAPTCHA is not configured')]];
         }
 
-        $recaptcha = new ReCaptcha($secret);
+        $recaptcha = new ReCaptcha($secret, new RecaptchaPost(self::RECAPTCHA_SITEVERIFY_URL));
         $recaptchaResp = $recaptcha->verify($token);
 
         if (!$recaptchaResp->isSuccess()) {
