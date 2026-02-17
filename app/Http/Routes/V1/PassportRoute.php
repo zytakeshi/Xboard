@@ -21,6 +21,10 @@ class PassportRoute
             $router->post('/auth/loginWithMailLink', [AuthController::class, 'loginWithMailLink']);
             // Comm
             $router->post('/comm/sendEmailVerify', [CommController::class, 'sendEmailVerify']);
+            $router->post('/comm/captcha/session/start', [CommController::class, 'startCaptchaSession']);
+            $router->get('/comm/captcha/session/status', [CommController::class, 'captchaSessionStatus']);
+            $router->post('/comm/captcha/session/verify', [CommController::class, 'verifyCaptchaSession']);
+            $router->get('/comm/captcha/challenge', [CommController::class, 'captchaChallenge']);
             $router->post('/comm/pv', [CommController::class, 'pv']);
         });
     }

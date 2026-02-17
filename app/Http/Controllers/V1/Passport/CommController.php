@@ -15,10 +15,87 @@ use Illuminate\Support\Facades\Cache;
 
 class CommController extends Controller
 {
+    public function startCaptchaSession(Request $request)
+    {
+        $captchaService = app(CaptchaService::class);
+        if (!$captchaService->isCaptchaEnabled()) {
+            return $this->success([
+                'enabled' => false,
+                'session_id' => null,
+                'challenge_url' => null,
+            ]);
+        }
+
+        $session = $captchaService->createSession($request, $request->input('action'));
+        $apiVersionPrefix = $this->getApiVersionPrefix($request);
+        $host = rtrim($request->getSchemeAndHttpHost(), '/');
+
+        return $this->success([
+            'enabled' => true,
+            'session_id' => $session['session_id'],
+            'captcha_type' => $session['captcha_type'],
+            'challenge_url' => $host . $apiVersionPrefix . '/passport/comm/captcha/challenge?session_id=' . urlencode($session['session_id']),
+            'expires_at' => $session['expires_at'],
+            'expires_in' => max(0, (int) $session['expires_at'] - time()),
+        ]);
+    }
+
+    public function captchaSessionStatus(Request $request)
+    {
+        $sessionId = (string) $request->query('session_id', '');
+        if ($sessionId === '') {
+            return $this->fail([400, __('Invalid code is incorrect')]);
+        }
+
+        $captchaService = app(CaptchaService::class);
+        $status = $captchaService->getSessionStatus($sessionId, $request->ip());
+        if (!$status) {
+            return $this->fail([400, __('Captcha session has expired')]);
+        }
+
+        return $this->success($status);
+    }
+
+    public function verifyCaptchaSession(Request $request)
+    {
+        $captchaService = app(CaptchaService::class);
+        [$valid, $result] = $captchaService->verifySessionChallenge($request);
+        if (!$valid) {
+            return $this->fail($result);
+        }
+
+        return $this->success($result);
+    }
+
+    public function captchaChallenge(Request $request)
+    {
+        $sessionId = (string) $request->query('session_id', '');
+        if ($sessionId === '') {
+            return response('Invalid captcha session', 400);
+        }
+
+        $captchaService = app(CaptchaService::class);
+        $challengeConfig = $captchaService->getChallengeConfig($sessionId, $request->ip());
+        if (!$challengeConfig) {
+            return response('Captcha session unavailable', 400);
+        }
+
+        $apiVersionPrefix = $this->getApiVersionPrefix($request);
+        $host = rtrim($request->getSchemeAndHttpHost(), '/');
+
+        return response()
+            ->view('captcha.challenge', [
+                'sessionId' => $sessionId,
+                'captchaType' => $challengeConfig['captcha_type'],
+                'siteKey' => $challengeConfig['site_key'],
+                'verifyEndpoint' => $host . $apiVersionPrefix . '/passport/comm/captcha/session/verify',
+            ])
+            ->header('Cache-Control', 'no-store, no-cache, must-revalidate, max-age=0');
+    }
 
     public function sendEmailVerify(CommSendEmailVerify $request)
     {
-                // 验证人机验证码
+        // 验证人机验证码
         $captchaService = app(CaptchaService::class);
         [$captchaValid, $captchaError] = $captchaService->verify($request);
         if (!$captchaValid) {
@@ -71,6 +148,15 @@ class CommController extends Controller
         }
 
         return $this->success(true);
+    }
+
+    private function getApiVersionPrefix(Request $request): string
+    {
+        $path = ltrim($request->path(), '/');
+        if (str_starts_with($path, 'api/v2/')) {
+            return '/api/v2';
+        }
+        return '/api/v1';
     }
 
 }
