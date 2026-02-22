@@ -27,6 +27,11 @@ class CaptchaService
             return [true, null];
         }
 
+        // Bypass captcha for old vpncheap clients that don't support it
+        if ($this->isLegacyVpncheapClient($request)) {
+            return [true, null];
+        }
+
         $sessionId = (string) $request->input('captcha_session_id', '');
         $sessionProof = (string) $request->input('captcha_proof', '');
 
@@ -425,6 +430,24 @@ class CaptchaService
         }
 
         return hash_equals($sessionIp, $requestIp);
+    }
+
+    /**
+     * Bypass captcha for vpncheap clients older than 1.1.0 which have no captcha support.
+     * Checks User-Agent header for "vpncheap/{version}" pattern.
+     */
+    private function isLegacyVpncheapClient(Request $request): bool
+    {
+        $ua = (string) $request->header('User-Agent', '');
+        if ($ua === '' || stripos($ua, 'vpncheap/') === false) {
+            return false;
+        }
+
+        if (preg_match('/vpncheap\/([\d]+(?:\.[\d]+){0,2})/i', $ua, $matches)) {
+            return version_compare($matches[1], '1.1.0', '<');
+        }
+
+        return false;
     }
 
     private function invalidCodeError(): array
