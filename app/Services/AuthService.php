@@ -36,13 +36,30 @@ class AuthService
         ];
     }
 
-    public function getSessions(): array
+    public function getSessions(?int $currentSessionId = null): array
     {
-        return $this->user->tokens()->get()->toArray();
+        return $this->user->tokens()
+            ->get()
+            ->map(function ($token) use ($currentSessionId) {
+                $session = $token->toArray();
+                $session['is_current_session'] = $currentSessionId !== null
+                    && (int) $token->id === (int) $currentSessionId;
+                return $session;
+            })
+            ->values()
+            ->toArray();
     }
 
-    public function removeSession(string $sessionId): bool
+    public function removeSession(string $sessionId, ?int $currentSessionId = null): bool
     {
+        if (
+            $currentSessionId !== null
+            && (string) $currentSessionId === (string) $sessionId
+        ) {
+            // Keep backward-compatible behavior: removing current session is a no-op.
+            return true;
+        }
+
         $this->user->tokens()->where('id', $sessionId)->delete();
         return true;
     }

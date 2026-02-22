@@ -34,8 +34,9 @@ class UserController extends Controller
         if (!$user) {
             return $this->fail([400, __('The user does not exist')]);
         }
+        $currentSessionId = $request->user()->currentAccessToken()?->id;
         $authService = new AuthService($user);
-        return $this->success($authService->getSessions());
+        return $this->success($authService->getSessions($currentSessionId));
     }
 
     public function removeActiveSession(Request $request)
@@ -44,8 +45,10 @@ class UserController extends Controller
         if (!$user) {
             return $this->fail([400, __('The user does not exist')]);
         }
+        $sessionId = (string) $request->input('session_id');
+        $currentSessionId = $request->user()->currentAccessToken()?->id;
         $authService = new AuthService($user);
-        return $this->success($authService->removeSession($request->input('session_id')));
+        return $this->success($authService->removeSession($sessionId, $currentSessionId));
     }
 
     public function checkLogin(Request $request)
