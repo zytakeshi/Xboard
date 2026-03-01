@@ -62,6 +62,8 @@ class OrderService
                 'period' => $newPeriod,
                 'trade_no' => Helper::generateOrderNo(),
                 'total_amount' => (int) (optional($plan->prices)[$newPeriod] * 100),
+                // Keep commission flow stable even if DB default drifts.
+                'commission_status' => 0,
             ]);
 
             $orderService = new self($order);
