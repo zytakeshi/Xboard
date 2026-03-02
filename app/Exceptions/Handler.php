@@ -136,21 +136,28 @@ class Handler extends ExceptionHandler
             $chatId = $this->resolveTelegramAlertChatId();
             $token = (string) config('services.telegram_error_alert.bot_token', '');
             $telegramService = new TelegramService($token);
+            $delivered = false;
             if ($chatId !== null) {
-                $telegramService->sendMessage($chatId, $message);
-                return;
+                try {
+                    $telegramService->sendMessage($chatId, $message);
+                    $delivered = true;
+                } catch (Throwable $e) {
+                    // Fallback below when group/channel target is invalid.
+                }
             }
-            $adminTelegramIds = \App\Models\User::query()
-                ->where(function ($query) {
-                    $query->where('is_admin', 1)
-                        ->orWhere('is_staff', 1);
-                })
-                ->whereNotNull('telegram_id')
-                ->pluck('telegram_id')
-                ->unique()
-                ->values();
-            foreach ($adminTelegramIds as $telegramId) {
-                $telegramService->sendMessage((int) $telegramId, $message);
+            if (!$delivered) {
+                $adminTelegramIds = \App\Models\User::query()
+                    ->where(function ($query) {
+                        $query->where('is_admin', 1)
+                            ->orWhere('is_staff', 1);
+                    })
+                    ->whereNotNull('telegram_id')
+                    ->pluck('telegram_id')
+                    ->unique()
+                    ->values();
+                foreach ($adminTelegramIds as $telegramId) {
+                    $telegramService->sendMessage((int) $telegramId, $message);
+                }
             }
         } catch (Throwable $e) {
             // Alerting failures must never affect request handling.
