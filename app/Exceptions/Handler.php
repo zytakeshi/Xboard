@@ -4,8 +4,11 @@ namespace App\Exceptions;
 
 use App\Helpers\ApiResponse;
 use App\Services\Plugin\InterceptResponseException;
+use App\Services\TelegramService;
 use Illuminate\Foundation\Exceptions\Handler as ExceptionHandler;
 use Illuminate\Support\Arr;
+use Illuminate\Support\Facades\Cache;
+use Illuminate\Support\Str;
 use Illuminate\View\ViewException;
 use Throwable;
 
@@ -44,6 +47,7 @@ class Handler extends ExceptionHandler
     public function report(Throwable $exception)
     {
         parent::report($exception);
+        $this->notifyExceptionToTelegram($exception);
     }
 
     /**
@@ -97,5 +101,113 @@ class Handler extends ExceptionHandler
         ] : [
             'message' => $this->isHttpException($e) ? $e->getMessage() : __("Uh-oh, we've had some problems, we're working on it."),
         ];
+    }
+
+    protected function notifyExceptionToTelegram(Throwable $exception): void
+    {
+        $dedupeKey = null;
+        $debounceKey = null;
+
+        try {
+            if (!$this->shouldReport($exception)) {
+                return;
+            }
+            if (!(bool) config('services.telegram_error_alert.enabled', false)) {
+                return;
+            }
+
+            $debounceSeconds = max((int) config('services.telegram_error_alert.debounce_seconds', 60), 1);
+            $dedupeSeconds = max((int) config('services.telegram_error_alert.dedupe_seconds', 600), $debounceSeconds);
+            $fingerprint = $this->getExceptionFingerprint($exception);
+            $dedupeKey = sprintf('telegram:error_alert:dedupe:%s', $fingerprint);
+            $debounceKey = 'telegram:error_alert:debounce';
+
+            // 1) Dedupe same exception fingerprint
+            if (!Cache::add($dedupeKey, 1, $dedupeSeconds)) {
+                return;
+            }
+            // 2) Debounce globally to prevent burst spam across different exceptions
+            if (!Cache::add($debounceKey, 1, $debounceSeconds)) {
+                Cache::forget($dedupeKey);
+                return;
+            }
+
+            $message = $this->buildTelegramExceptionMessage($exception, $fingerprint);
+            $chatId = $this->resolveTelegramAlertChatId();
+            $token = (string) config('services.telegram_error_alert.bot_token', '');
+            $telegramService = new TelegramService($token);
+            if ($chatId !== null) {
+                $telegramService->sendMessage($chatId, $message);
+                return;
+            }
+            $adminTelegramIds = \App\Models\User::query()
+                ->where(function ($query) {
+                    $query->where('is_admin', 1)
+                        ->orWhere('is_staff', 1);
+                })
+                ->whereNotNull('telegram_id')
+                ->pluck('telegram_id')
+                ->unique()
+                ->values();
+            foreach ($adminTelegramIds as $telegramId) {
+                $telegramService->sendMessage((int) $telegramId, $message);
+            }
+        } catch (Throwable $e) {
+            // Alerting failures must never affect request handling.
+            if ($dedupeKey !== null) {
+                Cache::forget($dedupeKey);
+            }
+            if ($debounceKey !== null) {
+                Cache::forget($debounceKey);
+            }
+        }
+    }
+
+    protected function resolveTelegramAlertChatId(): ?int
+    {
+        $chatId = config('services.telegram_error_alert.chat_id');
+        if ($chatId === null || $chatId === '') {
+            $chatId = admin_setting('telegram_channel_id') ?: admin_setting('telegram_discuss_id');
+        }
+        if ($chatId === null || $chatId === '') {
+            return null;
+        }
+        return (int) $chatId;
+    }
+
+    protected function getExceptionFingerprint(Throwable $exception): string
+    {
+        $request = request();
+        $requestSignature = $request
+            ? sprintf('%s %s', $request->getMethod(), $request->path())
+            : 'CLI';
+        $raw = implode('|', [
+            get_class($exception),
+            $exception->getMessage(),
+            $exception->getFile(),
+            (string) $exception->getLine(),
+            $requestSignature
+        ]);
+        return sha1($raw);
+    }
+
+    protected function buildTelegramExceptionMessage(Throwable $exception, string $fingerprint): string
+    {
+        $request = request();
+        $url = $request ? $request->fullUrl() : 'CLI';
+        $ip = $request ? ($request->ip() ?: 'N/A') : 'N/A';
+        $lines = [
+            '[XBoard Error Alert]',
+            'App: ' . config('app.name'),
+            'Env: ' . config('app.env'),
+            'Type: ' . get_class($exception),
+            'Message: ' . Str::limit($exception->getMessage(), 800),
+            'File: ' . $exception->getFile() . ':' . $exception->getLine(),
+            'Request: ' . $url,
+            'IP: ' . $ip,
+            'Fingerprint: ' . substr($fingerprint, 0, 16),
+            'At: ' . date('Y-m-d H:i:s')
+        ];
+        return Str::limit(implode("\n", $lines), 3800);
     }
 }
