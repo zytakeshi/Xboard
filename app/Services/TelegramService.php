@@ -11,7 +11,8 @@ class TelegramService {
 
     public function __construct($token = '')
     {
-        $this->api = 'https://api.telegram.org/bot' . admin_setting('telegram_bot_token', $token) . '/';
+        $resolvedToken = $token ?: admin_setting('telegram_bot_token', '');
+        $this->api = 'https://api.telegram.org/bot' . $resolvedToken . '/';
     }
 
     public function sendMessage(int $chatId, string $text, string $parseMode = '')
