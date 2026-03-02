@@ -17,6 +17,12 @@ use Illuminate\Support\Facades\Hash;
 
 class UserService
 {
+    public const DIAG_AVAILABLE = 'AVAILABLE';
+    public const DIAG_USER_BANNED = 'USER_BANNED';
+    public const DIAG_NO_TRANSFER_ENABLE = 'NO_TRANSFER_ENABLE';
+    public const DIAG_SUBSCRIPTION_EXPIRED = 'SUBSCRIPTION_EXPIRED';
+    public const DIAG_TRANSFER_EXHAUSTED = 'TRANSFER_EXHAUSTED';
+
     /**
      * Get the remaining days until the next traffic reset for a user.
      * This method reuses the TrafficResetService logic for consistency.
@@ -47,10 +53,52 @@ class UserService
 
     public function isAvailable(User $user)
     {
-        if (!$user->banned && $user->transfer_enable && ($user->expired_at > time() || $user->expired_at === NULL)) {
-            return true;
+        return !$user->banned &&
+            $user->transfer_enable &&
+            ($user->expired_at > time() || $user->expired_at === NULL);
+    }
+
+    public function getAvailabilityReason(User $user): string
+    {
+        if ($user->banned) {
+            return self::DIAG_USER_BANNED;
         }
-        return false;
+
+        if (!$user->transfer_enable || (int) $user->transfer_enable <= 0) {
+            return self::DIAG_NO_TRANSFER_ENABLE;
+        }
+
+        if ($user->expired_at !== null && (int) $user->expired_at <= time()) {
+            return self::DIAG_SUBSCRIPTION_EXPIRED;
+        }
+
+        $usedTraffic = (int) ($user->u ?? 0) + (int) ($user->d ?? 0);
+        if ($usedTraffic >= (int) $user->transfer_enable) {
+            return self::DIAG_TRANSFER_EXHAUSTED;
+        }
+
+        return self::DIAG_AVAILABLE;
+    }
+
+    public function getAvailabilityDiagnostic(User $user): array
+    {
+        $usedTraffic = (int) ($user->u ?? 0) + (int) ($user->d ?? 0);
+        $transferEnable = (int) ($user->transfer_enable ?? 0);
+        $isExpired = $user->expired_at !== null && (int) $user->expired_at <= time();
+        $reasonCode = $this->getAvailabilityReason($user);
+
+        return [
+            'available' => $this->isAvailable($user),
+            'reason_code' => $reasonCode,
+            'checks' => [
+                'banned' => (bool) $user->banned,
+                'expired' => $isExpired,
+                'transfer_enable_positive' => $transferEnable > 0,
+                'transfer_remaining_positive' => $transferEnable > $usedTraffic,
+                'used_traffic' => $usedTraffic,
+                'transfer_enable' => $transferEnable,
+            ],
+        ];
     }
 
     public function getAvailableUsers()

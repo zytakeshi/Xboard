@@ -10,6 +10,8 @@ use App\Services\ServerService;
 use App\Services\UserService;
 use App\Utils\Helper;
 use Illuminate\Http\Request;
+use Illuminate\Support\Str;
+use Symfony\Component\HttpFoundation\Response;
 
 class ClientController extends Controller
 {
@@ -42,17 +44,39 @@ class ClientController extends Controller
 
         $user = $request->user();
         $userService = new UserService();
+        $diagnostic = ServerService::getNodeDiagnostic($user);
+        $requestId = (string) Str::uuid();
 
         if (!$userService->isAvailable($user)) {
             HookManager::call('client.subscribe.unavailable');
-            return response('', 200, ['Content-Type' => 'text/plain']);
+            return response('', 200, $this->buildSubscribeHeaders(
+                status: 'unavailable',
+                reasonCode: $diagnostic['reason_code'] ?? UserService::DIAG_AVAILABLE,
+                requestId: $requestId,
+                serverCount: 0
+            ));
         }
 
-        return $this->doSubscribe($request, $user);
+        return $this->doSubscribe(
+            request: $request,
+            user: $user,
+            servers: null,
+            diagnostic: $diagnostic,
+            requestId: $requestId
+        );
     }
 
-    public function doSubscribe(Request $request, $user, $servers = null)
+    public function doSubscribe(
+        Request $request,
+        $user,
+        $servers = null,
+        ?array $diagnostic = null,
+        ?string $requestId = null
+    )
     {
+        $requestId = $requestId ?? (string) Str::uuid();
+        $diagnostic = $diagnostic ?? ServerService::getNodeDiagnostic($user);
+
         if ($servers === null) {
             $servers = ServerService::getAvailableServers($user);
             $servers = HookManager::filter('client.subscribe.servers', $servers, $user, $request);
@@ -72,6 +96,15 @@ class ClientController extends Controller
             filterKeywords: $filterKeywords
         );
 
+        $subscribeStatus = 'ok';
+        $subscribeReasonCode = $diagnostic['reason_code'] ?? UserService::DIAG_AVAILABLE;
+        if (count($serversFiltered) === 0) {
+            if ($subscribeReasonCode === UserService::DIAG_AVAILABLE) {
+                $subscribeReasonCode = ServerService::DIAG_NO_VISIBLE_SERVERS;
+            }
+            $subscribeStatus = 'unavailable';
+        }
+
         $this->setSubscribeInfoToServers($serversFiltered, $user, count($servers) - count($serversFiltered));
         $serversFiltered = $this->addPrefixToServerName($serversFiltered);
 
@@ -83,7 +116,46 @@ class ClientController extends Controller
             'clientVersion' => $clientInfo['version'] ?? null
         ]);
 
-        return $protocolInstance->handle();
+        $response = $protocolInstance->handle();
+
+        if ($response instanceof Response) {
+            $headers = $this->buildSubscribeHeaders(
+                status: $subscribeStatus,
+                reasonCode: $subscribeReasonCode,
+                requestId: $requestId,
+                serverCount: count($serversFiltered)
+            );
+            foreach ($headers as $key => $value) {
+                $response->headers->set($key, $value);
+            }
+            return $response;
+        }
+
+        return response(
+            $response,
+            200,
+            $this->buildSubscribeHeaders(
+                status: $subscribeStatus,
+                reasonCode: $subscribeReasonCode,
+                requestId: $requestId,
+                serverCount: count($serversFiltered)
+            )
+        );
+    }
+
+    private function buildSubscribeHeaders(
+        string $status,
+        string $reasonCode,
+        string $requestId,
+        int $serverCount
+    ): array {
+        return [
+            'Content-Type' => 'text/plain',
+            'X-Subscribe-Status' => $status,
+            'X-Reason-Code' => $reasonCode,
+            'X-Request-Id' => $requestId,
+            'X-Server-Count' => (string) $serverCount,
+        ];
     }
 
     /**

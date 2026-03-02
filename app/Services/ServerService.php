@@ -2,6 +2,7 @@
 
 namespace App\Services;
 
+use App\Models\Plan;
 use App\Models\Server;
 use App\Models\ServerRoute;
 use App\Models\User;
@@ -10,6 +11,12 @@ use Illuminate\Support\Collection;
 
 class ServerService
 {
+    public const DIAG_PLAN_GROUP_MISMATCH = 'PLAN_GROUP_MISMATCH';
+    public const DIAG_GROUP_ID_MISMATCH = 'GROUP_ID_MISMATCH';
+    public const DIAG_NO_SERVERS_FOR_GROUP = 'NO_SERVERS_FOR_GROUP';
+    public const DIAG_NO_VISIBLE_SERVERS = 'NO_VISIBLE_SERVERS';
+    public const DIAG_NO_PLAN = 'NO_PLAN';
+
 
     /**
      * 获取所有服务器列表
@@ -57,6 +64,115 @@ class ServerService
         })->toArray();
 
         return $servers;
+    }
+
+    public static function countServersForGroup(?int $groupId): int
+    {
+        if ($groupId === null) {
+            return 0;
+        }
+
+        return Server::whereJsonContains('group_ids', (string) $groupId)->count();
+    }
+
+    public static function countVisibleServersForGroup(?int $groupId): int
+    {
+        if ($groupId === null) {
+            return 0;
+        }
+
+        return Server::whereJsonContains('group_ids', (string) $groupId)
+            ->where('show', true)
+            ->count();
+    }
+
+    public static function getNodeDiagnostic(User $user): array
+    {
+        $userService = app(UserService::class);
+        $availability = $userService->getAvailabilityDiagnostic($user);
+        $availabilityReason = $availability['reason_code'] ?? UserService::DIAG_AVAILABLE;
+
+        $plan = null;
+        if ($user->plan_id) {
+            $plan = Plan::find($user->plan_id);
+        }
+
+        $userGroupId = $user->group_id !== null ? (int) $user->group_id : null;
+        $planGroupId = $plan && $plan->group_id !== null ? (int) $plan->group_id : null;
+
+        $serversForGroup = self::countServersForGroup($userGroupId);
+        $visibleServersForGroup = self::countVisibleServersForGroup($userGroupId);
+
+        $reasonCode = $availabilityReason;
+        if ($availability['available']) {
+            if (!$user->plan_id || !$plan) {
+                $reasonCode = self::DIAG_NO_PLAN;
+            } elseif ($planGroupId !== null && $userGroupId !== null && $planGroupId !== $userGroupId) {
+                $reasonCode = self::DIAG_PLAN_GROUP_MISMATCH;
+            } elseif ($userGroupId === null) {
+                $reasonCode = self::DIAG_GROUP_ID_MISMATCH;
+            } elseif ($serversForGroup <= 0) {
+                $reasonCode = self::DIAG_NO_SERVERS_FOR_GROUP;
+            } elseif ($visibleServersForGroup <= 0) {
+                $reasonCode = self::DIAG_NO_VISIBLE_SERVERS;
+            } else {
+                $reasonCode = $availabilityReason === UserService::DIAG_TRANSFER_EXHAUSTED
+                    ? UserService::DIAG_TRANSFER_EXHAUSTED
+                    : UserService::DIAG_AVAILABLE;
+            }
+        }
+
+        return [
+            'diagnostic_version' => 1,
+            'available' => $reasonCode === UserService::DIAG_AVAILABLE,
+            'reason_code' => $reasonCode,
+            'reason_detail' => self::buildReasonDetail(
+                $reasonCode,
+                $userGroupId,
+                $planGroupId,
+                $serversForGroup,
+                $visibleServersForGroup
+            ),
+            'checks' => array_merge($availability['checks'], [
+                'plan_exists' => $plan !== null,
+                'plan_id' => $user->plan_id,
+                'plan_group_id' => $planGroupId,
+                'user_group_id' => $userGroupId,
+                'servers_for_group' => $serversForGroup,
+                'visible_servers_for_group' => $visibleServersForGroup,
+            ]),
+        ];
+    }
+
+    private static function buildReasonDetail(
+        string $reasonCode,
+        ?int $userGroupId,
+        ?int $planGroupId,
+        int $serversForGroup,
+        int $visibleServersForGroup
+    ): string {
+        return match ($reasonCode) {
+            self::DIAG_NO_PLAN =>
+                'user has no valid plan',
+            self::DIAG_PLAN_GROUP_MISMATCH =>
+                "plan_group_id={$planGroupId}, user_group_id={$userGroupId}",
+            self::DIAG_GROUP_ID_MISMATCH =>
+                'user_group_id is null',
+            self::DIAG_NO_SERVERS_FOR_GROUP =>
+                "user_group_id={$userGroupId}, matched_servers={$serversForGroup}",
+            self::DIAG_NO_VISIBLE_SERVERS =>
+                "user_group_id={$userGroupId}, visible_servers={$visibleServersForGroup}",
+            UserService::DIAG_USER_BANNED =>
+                'user is banned',
+            UserService::DIAG_NO_TRANSFER_ENABLE =>
+                'transfer_enable <= 0',
+            UserService::DIAG_SUBSCRIPTION_EXPIRED =>
+                'expired_at <= now',
+            UserService::DIAG_TRANSFER_EXHAUSTED =>
+                'used traffic reached transfer_enable',
+            default =>
+                'node diagnostic resolved',
+        };
     }
 
     /**

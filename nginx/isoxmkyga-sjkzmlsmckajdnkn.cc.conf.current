@@ -1,0 +1,150 @@
+server
+{
+    listen 80;
+    listen 443 ssl http2 ;
+		listen 7788;
+    server_name isoxmkyga-sjkzmlsmckajdnkn.cc api.isoxmkyga-sjkzmlsmckajdnkn.cc backup.isoxmkyga-sjkzmlsmckajdnkn.cc  siusn-sisjxl.top fengqun.io *.fengxingxunjie.com fengxingxunjie.com fengqunsoft.com fengqun.my *.fengqun.my *.fq-shuju-zc.co fengqun.help *.fengqun.help *.fengqun001.top *.fengqun.io soga.fq-top-v-fast.com fq-top-v-fast.com *.ifqofqo.cc *.fengqunvpn.xyz *.fengqun.info *.fengqunvpn.co *.fengqunbest.site dash.fengqun.shop fengqun002.top fq-shuju-zc.co 15.235.204.108 socheap.sijsnzkdlc-shsnac.top *.sijsnzkdlc-shsnac.top fengqun001.top soft.fq-shuju-zc.co;
+    index index.php index.html index.htm default.php default.htm default.html;
+    root /www/wwwroot/isoxmkyga-sjkzmlsmckajdnkn.cc;
+
+    #CERT-APPLY-CHECK--START
+    # Configuration related to file verification for SSL certificate application - Do not delete
+    include /www/server/panel/vhost/nginx/well-known/isoxmkyga-sjkzmlsmckajdnkn.cc.conf;
+    #CERT-APPLY-CHECK--END
+    #SSL-START SSL related configuration, do NOT delete or modify the next line of commented-out 404 rules
+    #error_page 404/404.html;
+        ssl_certificate    /www/server/panel/vhost/cert/isoxmkyga-sjkzmlsmckajdnkn.cc/fullchain.pem;
+        ssl_certificate_key    /www/server/panel/vhost/cert/isoxmkyga-sjkzmlsmckajdnkn.cc/privkey.pem;
+        ssl_protocols TLSv1.1 TLSv1.2 TLSv1.3;
+        ssl_ciphers EECDH+CHACHA20:EECDH+CHACHA20-draft:EECDH+AES128:RSA+AES128:EECDH+AES256:RSA+AES256:EECDH+3DES:RSA+3DES:!MD5;
+        ssl_prefer_server_ciphers on;
+        ssl_session_tickets on;
+        ssl_session_cache shared:SSL:10m;
+        ssl_session_timeout 10m;
+        add_header Strict-Transport-Security "max-age=31536000";
+        error_page 497  https://$host$request_uri;
+    
+    #SSL-END
+
+    #ERROR-PAGE-START  Error page configuration, allowed to be commented, deleted or modified
+    error_page 404 /404.html;
+    error_page 502 /502.html;
+    #ERROR-PAGE-END
+
+    #PHP-INFO-START  PHP reference configuration, allowed to be commented, deleted or modified
+    include enable-php-81.conf;
+    #PHP-INFO-END
+
+    #REWRITE-START URL rewrite rule reference, any modification will invalidate the rewrite rules set by the panel
+    include /www/server/panel/vhost/rewrite/isoxmkyga-sjkzmlsmckajdnkn.cc.conf;
+    #REWRITE-END
+
+    # Forbidden files or directories
+    location ~ ^/(\.user.ini|\.htaccess|\.git|\.env|\.svn|\.project|LICENSE|README.md)
+    {
+        return 404;
+    }
+
+    # Directory verification related settings for one-click application for SSL certificate
+    location ~ \.well-known{
+        allow all;
+    }
+
+    #Prohibit putting sensitive files in certificate verification directory
+    if ( $uri ~ "^/\.well-known/.*\.(php|jsp|py|js|css|lua|ts|go|zip|tar\.gz|rar|7z|sql|bak)$" ) {
+        return 403;
+    }
+
+    location ~ .*\.(gif|jpg|jpeg|png|bmp|swf)$
+    {
+        expires      30d;
+        error_log /dev/null;
+        access_log /dev/null;
+    }
+
+    location ~ .*\.(js|css)?$
+    {
+        expires      12h;
+        error_log /dev/null;
+        access_log /dev/null; 
+    }
+    #try_files $uri $uri/ /index.php?$query_string;
+    # --- BLOCK subscribe endpoint explicitly ---
+    location = /api/v1/client/subscribe {
+        return 403; 
+    }
+    
+    location ^~ / {
+    proxy_pass http://127.0.0.1:7001;
+    proxy_http_version 1.1;
+    proxy_set_header Connection "";
+    proxy_set_header X-Real-IP $remote_addr;
+    proxy_set_header X-Real-PORT $remote_port;
+    proxy_set_header X-Forwarded-For $proxy_add_x_forwarded_for;
+    proxy_set_header Host $http_host;
+    proxy_set_header Scheme $scheme;
+    proxy_set_header Server-Protocol $server_protocol;
+    proxy_set_header Server-Name $server_name;
+    proxy_set_header Server-Addr $server_addr;
+    proxy_set_header Server-Port $server_port;
+    proxy_cache off;
+}
+
+    access_log  /www/wwwlogs/isoxmkyga-sjkzmlsmckajdnkn.cc.log;
+    error_log  /www/wwwlogs/isoxmkyga-sjkzmlsmckajdnkn.cc.error.log;
+}
+
+
+server {
+    listen 80;
+    listen 443 ssl http2 ;
+		listen 7788;
+    server_name api.isoxmkyga-sjkzmlsmckajdnkn.top backup.isoxmkyga-sjkzmlsmckajdnkn.top;
+
+location / {
+        return 404;
+    }
+
+# 把所有 /api/v2/ 请求转发到后端
+    #location /api/v2/ {
+location ~ ^/api/v[12]/ {
+    proxy_pass http://127.0.0.1:7001;
+    proxy_set_header Host $host;
+    proxy_set_header X-Real-IP $remote_addr;
+    proxy_set_header X-Forwarded-For $proxy_add_x_forwarded_for;
+    proxy_set_header X-Forwarded-Proto $scheme;
+}
+location ~ ^/s/ {
+    proxy_pass http://127.0.0.1:7001;
+    proxy_set_header Host $host;
+    proxy_set_header X-Real-IP $remote_addr;
+    proxy_set_header X-Forwarded-For $proxy_add_x_forwarded_for;
+    proxy_set_header X-Forwarded-Proto $scheme;
+}
+
+location ~ ^//api/v1/guest/payment/notify/epay/ {
+    proxy_pass http://127.0.0.1:7001;
+    proxy_set_header Host $host;
+    proxy_set_header X-Real-IP $remote_addr;
+    proxy_set_header X-Forwarded-For $proxy_add_x_forwarded_for;
+    proxy_set_header X-Forwarded-Proto $scheme;
+}
+
+##location ^~ / {
+location /59dac16b {
+    proxy_pass http://127.0.0.1:7001;
+    proxy_http_version 1.1;
+    proxy_set_header Connection "";
+    proxy_set_header X-Real-IP $remote_addr;
+    proxy_set_header X-Real-PORT $remote_port;
+    proxy_set_header X-Forwarded-For $proxy_add_x_forwarded_for;
+    proxy_set_header Host $http_host;
+    proxy_set_header Scheme $scheme;
+    proxy_set_header Server-Protocol $server_protocol;
+    proxy_set_header Server-Name $server_name;
+    proxy_set_header Server-Addr $server_addr;
+    proxy_set_header Server-Port $server_port;
+    proxy_cache off;
+}
+    
+}

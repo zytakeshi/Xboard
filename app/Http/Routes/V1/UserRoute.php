@@ -6,6 +6,7 @@ use App\Http\Controllers\V1\User\CouponController;
 use App\Http\Controllers\V1\User\GiftCardController;
 use App\Http\Controllers\V1\User\InviteController;
 use App\Http\Controllers\V1\User\KnowledgeController;
+use App\Http\Controllers\V1\User\NodeDiagnosticController;
 use App\Http\Controllers\V1\User\NoticeController;
 use App\Http\Controllers\V1\User\OrderController;
 use App\Http\Controllers\V1\User\PlanController;
@@ -62,6 +63,7 @@ class UserRoute
             $router->post('/ticket/withdraw', [TicketController::class, 'withdraw']);
             // Server
             $router->get('/server/fetch', [ServerController::class, 'fetch']);
+            $router->get('/node/diagnose', [NodeDiagnosticController::class, 'diagnose']);
             // Coupon
             $router->post('/coupon/check', [CouponController::class, 'check']);
             // Gift Card
