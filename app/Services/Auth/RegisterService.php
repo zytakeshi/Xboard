@@ -10,6 +10,8 @@ use App\Services\UserService;
 use App\Utils\CacheKey;
 use App\Utils\Dict;
 use App\Utils\Helper;
+use Illuminate\Database\QueryException;
+use Illuminate\Database\UniqueConstraintViolationException;
 use Illuminate\Http\Request;
 use Illuminate\Support\Facades\Cache;
 
@@ -160,8 +162,15 @@ class RegisterService
         ]);
 
         // 保存用户
-        if (!$user->save()) {
-            return [false, [500, __('Register failed')]];
+        try {
+            if (!$user->save()) {
+                return [false, [500, __('Register failed')]];
+            }
+        } catch (UniqueConstraintViolationException|QueryException $e) {
+            if ($this->isDuplicateEmailViolation($e)) {
+                return [false, [400201, __('Email already exists')]];
+            }
+            throw $e;
         }
 
         // 清除邮箱验证码
@@ -184,5 +193,25 @@ class RegisterService
         }
 
         return [true, $user];
+    }
+
+    private function isDuplicateEmailViolation(\Throwable $e): bool
+    {
+        $message = $e->getMessage();
+        if (!str_contains($message, 'email')) {
+            return false;
+        }
+        if (str_contains($message, 'Duplicate entry')) {
+            return true;
+        }
+
+        if ($e instanceof QueryException) {
+            $errorInfo = $e->errorInfo ?? [];
+            $sqlState = (string) ($errorInfo[0] ?? '');
+            $driverCode = (int) ($errorInfo[1] ?? 0);
+            return $sqlState === '23000' || $driverCode === 1062;
+        }
+
+        return false;
     }
 }
