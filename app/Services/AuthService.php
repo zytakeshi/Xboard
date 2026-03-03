@@ -3,6 +3,7 @@
 namespace App\Services;
 
 use App\Models\User;
+use Illuminate\Support\Facades\DB;
 use Illuminate\Support\Str;
 use Laravel\Sanctum\PersonalAccessToken;
 
@@ -15,25 +16,89 @@ class AuthService
         $this->user = $user;
     }
 
-    public function generateAuthData(): array
+    public function generateAuthData(?string $sessionName = null): array
     {
-        // Create a new Sanctum token with device info
-        $token = $this->user->createToken(
-            Str::random(20), // token name (device identifier)
-            ['*'], // abilities
-            now()->addYear() // expiration
-        );
+        return DB::transaction(function () use ($sessionName) {
+            // Lock user row to serialize concurrent logins
+            $user = User::query()
+                ->with('plan:id,device_limit')
+                ->whereKey($this->user->id)
+                ->lockForUpdate()
+                ->firstOrFail();
 
-        // Format token: remove ID prefix and add Bearer
-        $tokenParts = explode('|', $token->plainTextToken);
-        $formattedToken = 'Bearer ' . ($tokenParts[1] ?? $tokenParts[0]);
+            $kickResult = $this->enforceSessionLimit($user);
+            $tokenName = $this->normalizeSessionName($sessionName);
+
+            $token = $user->createToken(
+                $tokenName,
+                ['*'],
+                now()->addYear()
+            );
+
+            // Format token: remove ID prefix and add Bearer
+            $tokenParts = explode('|', $token->plainTextToken);
+            $formattedToken = 'Bearer ' . ($tokenParts[1] ?? $tokenParts[0]);
+
+            return [
+                'user_id' => $user->id,
+                'token' => $user->token,
+                'auth_data' => $formattedToken,
+                'is_admin' => $user->is_admin,
+                'device_limit' => $kickResult['device_limit'],
+                'sessions_kicked' => $kickResult['kicked_count'],
+            ];
+        });
+    }
+
+    /**
+     * Enforce session/device limit by removing oldest tokens when over limit.
+     */
+    private function enforceSessionLimit(User $user): array
+    {
+        $limit = $user->device_limit ?? $user->plan?->device_limit ?? 0;
+
+        if ($limit <= 0) {
+            return ['device_limit' => $limit, 'kicked_count' => 0, 'kicked_ids' => []];
+        }
+
+        $activeTokens = $user->tokens()
+            ->where(function ($query) {
+                $query->whereNull('expires_at')
+                    ->orWhere('expires_at', '>', now());
+            })
+            ->orderByRaw('COALESCE(last_used_at, created_at) ASC')
+            ->get();
+
+        $count = $activeTokens->count();
+
+        // Need room for the new token about to be created
+        if ($count < $limit) {
+            return ['device_limit' => $limit, 'kicked_count' => 0, 'kicked_ids' => []];
+        }
+
+        $toKick = $count - $limit + 1;
+        $kickTargets = $activeTokens->take($toKick);
+        $kickedIds = $kickTargets->pluck('id')->toArray();
+
+        $user->tokens()->whereIn('id', $kickedIds)->delete();
 
         return [
-            'user_id' => $this->user->id,
-            'token' => $this->user->token,
-            'auth_data' => $formattedToken,
-            'is_admin' => $this->user->is_admin,
+            'device_limit' => $limit,
+            'kicked_count' => count($kickedIds),
+            'kicked_ids' => $kickedIds,
         ];
+    }
+
+    /**
+     * Sanitize session name input. Falls back to web_XXXXXXXX if invalid.
+     */
+    private function normalizeSessionName(?string $sessionName): string
+    {
+        if ($sessionName !== null && preg_match('/^[a-zA-Z0-9_.\-]{1,100}$/', $sessionName)) {
+            return $sessionName;
+        }
+
+        return 'web_' . Str::random(8);
     }
 
     public function getSessions(?int $currentSessionId = null): array

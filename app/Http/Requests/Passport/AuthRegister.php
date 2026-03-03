@@ -15,7 +15,8 @@ class AuthRegister extends FormRequest
     {
         return [
             'email' => 'required|email:strict|unique:v2_user,email',
-            'password' => 'required|min:8'
+            'password' => 'required|min:8',
+            'session_name' => 'nullable|string|max:100',
         ];
     }
 
