@@ -68,6 +68,30 @@ class RevenueCatService
             $rcEvent = RevenueCatEvent::create($eventData);
         }
 
+        if ($environment === 'SANDBOX') {
+            $sandboxUser = $this->findUser($event);
+            if (!$sandboxUser) {
+                $rcEvent->markProcessed();
+                Log::info('RevenueCat: Sandbox event ignored, user not found', [
+                    'event_id' => $eventId,
+                    'app_user_id' => $event['app_user_id'] ?? null,
+                ]);
+                return ['success' => true, 'message' => 'Sandbox event ignored: user not found'];
+            }
+
+            if (!$this->isSandboxUserAllowed($sandboxUser, $event)) {
+                $rcEvent->markProcessed();
+                Log::warning('RevenueCat: Sandbox event blocked for non-whitelisted user', [
+                    'event_id' => $eventId,
+                    'app_user_id' => $event['app_user_id'] ?? null,
+                    'user_id' => $sandboxUser->id,
+                    'email' => $sandboxUser->email,
+                    'event_type' => $eventType,
+                ]);
+                return ['success' => true, 'message' => 'Sandbox event ignored: user not whitelisted'];
+            }
+        }
+
         try {
             $result = $this->handleEvent($event);
             if (($result['success'] ?? false) === true) {
@@ -316,10 +340,11 @@ class RevenueCatService
             return ['success' => false, 'error' => 'Unknown product ID'];
         }
 
-        $order = $this->createOrder($event, $user, $planMapping, $orderType, $isTrial);
+        $isSandbox = $this->isSandboxEvent($event);
+        $order = $this->createOrder($event, $user, $planMapping, $orderType, $isTrial, $isSandbox);
         $this->syncEntitlementExpiration($user, $event);
 
-        $user->subscription_will_renew = $isNonRenewing ? false : true;
+        $user->subscription_will_renew = $isSandbox ? false : ($isNonRenewing ? false : true);
         $user->subscription_billing_issue = false;
         $user->subscription_grace_period_expires_at = null;
         $user->revenuecat_app_user_id = $event['app_user_id'] ?? $user->revenuecat_app_user_id;
@@ -337,12 +362,14 @@ class RevenueCatService
         User $user,
         array $planMapping,
         int $orderType,
-        bool $isTrial = false
+        bool $isTrial = false,
+        bool $isSandbox = false
     ): Order {
         $transactionId = $this->getTransactionId($event);
         $originalTransactionId = $this->getOriginalTransactionId($event);
         $productId = $this->getProductId($event);
-        $totalAmount = $isTrial ? 0 : $this->getTransactionAmountCents($event);
+        $isSandboxNonBillable = $isSandbox && !$this->isSandboxBillable();
+        $totalAmount = ($isTrial || $isSandboxNonBillable) ? 0 : $this->getTransactionAmountCents($event);
         $eventId = $event['id'] ?? null;
 
         if ($eventId) {
@@ -350,7 +377,10 @@ class RevenueCatService
             if ($existingOrder) {
                 if ($existingOrder->status === Order::STATUS_PENDING) {
                     $orderService = new OrderService($existingOrder);
-                    $orderService->paid($transactionId ?? $existingOrder->trade_no);
+                    $callbackNo = $isSandboxNonBillable
+                        ? 'sandbox:' . ($transactionId ?? $existingOrder->trade_no)
+                        : ($transactionId ?? $existingOrder->trade_no);
+                    $orderService->paid($callbackNo);
                 }
                 return $existingOrder->fresh();
             }
@@ -360,7 +390,10 @@ class RevenueCatService
             if ($existingOrder) {
                 if ($existingOrder->status === Order::STATUS_PENDING) {
                     $orderService = new OrderService($existingOrder);
-                    $orderService->paid($transactionId ?? $existingOrder->trade_no);
+                    $callbackNo = $isSandboxNonBillable
+                        ? 'sandbox:' . ($transactionId ?? $existingOrder->trade_no)
+                        : ($transactionId ?? $existingOrder->trade_no);
+                    $orderService->paid($callbackNo);
                 }
                 return $existingOrder->fresh();
             }
@@ -374,22 +407,65 @@ class RevenueCatService
         $order->total_amount = $totalAmount;
         $order->status = Order::STATUS_PENDING;
         $order->type = $orderType;
-        $order->payment_id = $this->config['payment_id'] ?? null;
+        $order->payment_id = $isSandboxNonBillable ? null : ($this->config['payment_id'] ?? null);
 
         $order->revenuecat_event_id = $event['id'] ?? null;
         $order->revenuecat_transaction_id = $transactionId;
         $order->revenuecat_original_transaction_id = $originalTransactionId;
         $order->revenuecat_product_id = $productId;
-        $order->currency = $event['currency'] ?? ($event['transaction']['currency'] ?? null);
+        $order->currency = $isSandboxNonBillable
+            ? $this->getSandboxCurrency()
+            : ($event['currency'] ?? ($event['transaction']['currency'] ?? null));
 
         $order->save();
 
         $orderService = new OrderService($order);
-        if (!$orderService->paid($transactionId ?? $order->trade_no)) {
+        $callbackNo = $isSandboxNonBillable
+            ? 'sandbox:' . ($transactionId ?? $order->trade_no)
+            : ($transactionId ?? $order->trade_no);
+        if (!$orderService->paid($callbackNo)) {
             throw new \Exception('Failed to mark order as paid');
         }
 
         return $order->fresh();
+    }
+
+    protected function isSandboxEvent(array $event): bool
+    {
+        return strtoupper((string) ($event['environment'] ?? 'PRODUCTION')) === 'SANDBOX';
+    }
+
+    protected function isSandboxBillable(): bool
+    {
+        return (bool) ($this->config['sandbox_billable'] ?? false);
+    }
+
+    protected function getSandboxCurrency(): string
+    {
+        return strtoupper((string) ($this->config['sandbox_currency'] ?? 'XTS'));
+    }
+
+    protected function isSandboxUserAllowed(User $user, array $event): bool
+    {
+        $allowUserIds = array_map('intval', $this->config['sandbox_allowed_user_ids'] ?? []);
+        if (in_array((int) $user->id, $allowUserIds, true)) {
+            return true;
+        }
+
+        $allowEmails = array_map(
+            static fn ($email) => strtolower(trim((string) $email)),
+            $this->config['sandbox_allowed_emails'] ?? []
+        );
+        if ($user->email && in_array(strtolower((string) $user->email), $allowEmails, true)) {
+            return true;
+        }
+
+        $appUserId = (string) ($event['app_user_id'] ?? '');
+        if ($appUserId !== '' && ctype_digit($appUserId) && in_array((int) $appUserId, $allowUserIds, true)) {
+            return true;
+        }
+
+        return false;
     }
 
     protected function syncEntitlementExpiration(User $user, array $event): void

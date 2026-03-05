@@ -1,5 +1,27 @@
 <?php
 
+$parseCsv = static function (mixed $raw): array {
+    $value = is_string($raw) ? $raw : '';
+    if ($value === '') {
+        return [];
+    }
+    $parts = array_map('trim', explode(',', $value));
+    return array_values(array_filter($parts, static fn ($item) => $item !== ''));
+};
+
+$sandboxAllowedUserIds = array_map(
+    static fn (string $id) => (int) $id,
+    array_filter(
+        $parseCsv(env('REVENUECAT_SANDBOX_ALLOW_USER_IDS', '')),
+        static fn (string $id) => ctype_digit($id)
+    )
+);
+
+$sandboxAllowedEmails = array_map(
+    static fn (string $email) => strtolower($email),
+    $parseCsv(env('REVENUECAT_SANDBOX_ALLOW_EMAILS', ''))
+);
+
 return [
     /*
     |--------------------------------------------------------------------------
@@ -17,6 +39,18 @@ return [
     | Process only matching events. Set to ALL to accept both.
     */
     'environment' => env('REVENUECAT_ENVIRONMENT', 'PRODUCTION'),
+
+    /*
+    |--------------------------------------------------------------------------
+    | Sandbox Billing Mode
+    |--------------------------------------------------------------------------
+    | Keep sandbox/TestFlight flows available for review testing, but default
+    | to non-billable so sandbox events never inflate real revenue/orders.
+    */
+    'sandbox_billable' => filter_var(env('REVENUECAT_SANDBOX_BILLABLE', false), FILTER_VALIDATE_BOOLEAN),
+    'sandbox_currency' => env('REVENUECAT_SANDBOX_CURRENCY', 'XTS'),
+    'sandbox_allowed_user_ids' => $sandboxAllowedUserIds,
+    'sandbox_allowed_emails' => $sandboxAllowedEmails,
 
     /*
     |--------------------------------------------------------------------------
