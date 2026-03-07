@@ -26,5 +26,12 @@ class EventServiceProvider extends ServiceProvider
 
         // 注册用户模型观察者
         User::observe(UserObserver::class);
+
+        // Register AiSupport observers if plugin is available and enabled
+        if (class_exists(\App\Plugins\AiSupport\AiSupportPlugin::class) && \App\Plugins\AiSupport\AiSupportPlugin::isEnabled()) {
+            \App\Models\Ticket::observe(\App\Plugins\AiSupport\Observers\TicketObserver::class);
+            \App\Models\TicketMessage::observe(\App\Plugins\AiSupport\Observers\TicketMessageObserver::class);
+            \App\Models\Knowledge::observe(\App\Plugins\AiSupport\Observers\KnowledgeObserver::class);
+        }
     }
 }

@@ -1,0 +1,44 @@
+/* AirPilot Chat Widget — Dark Theme Override */
+
+.airpilot-root--dark {
+  --airpilot-bg: #1a1a2e;
+  --airpilot-bg-secondary: #16162a;
+  --airpilot-bg-tertiary: #1f1f3a;
+  --airpilot-text: #e2e8f0;
+  --airpilot-text-secondary: #94a3b8;
+  --airpilot-text-tertiary: #64748b;
+  --airpilot-border: #2d2d4a;
+  --airpilot-border-light: #1f1f3a;
+  --airpilot-shadow: 0 10px 25px rgba(0, 0, 0, 0.3), 0 4px 10px rgba(0, 0, 0, 0.2);
+  --airpilot-shadow-sm: 0 1px 3px rgba(0, 0, 0, 0.3);
+  --airpilot-ai-msg-bg: #1f1f3a;
+  --airpilot-ai-msg-text: #e2e8f0;
+  --airpilot-system-msg-bg: #3b2e1a;
+  --airpilot-system-msg-text: #fbbf24;
+  --airpilot-input-bg: #1a1a2e;
+  --airpilot-input-border: #2d2d4a;
+  --airpilot-primary-light: #2a2650;
+  --airpilot-star-empty: #3b3b5c;
+}
+
+/* Dark mode code blocks */
+.airpilot-root--dark .airpilot-msg-content pre {
+  background: #0d0d1a;
+}
+
+.airpilot-root--dark .airpilot-msg-content code {
+  background: rgba(255, 255, 255, 0.08);
+}
+
+.airpilot-root--dark .airpilot-msg--user .airpilot-msg-content code {
+  background: rgba(255, 255, 255, 0.15);
+}
+
+/* Dark mode scrollbar */
+.airpilot-root--dark .airpilot-messages::-webkit-scrollbar-thumb {
+  background: #2d2d4a;
+}
+
+.airpilot-root--dark .airpilot-messages::-webkit-scrollbar-thumb:hover {
+  background: #3b3b5c;
+}

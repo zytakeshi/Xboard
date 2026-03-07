@@ -59,6 +59,86 @@
 <script src="/theme/{{$theme}}/assets/vendors.async.js?v={{$version}}"></script>
 <script src="/theme/{{$theme}}/assets/components.async.js?v={{$version}}"></script>
 <script src="/theme/{{$theme}}/assets/umi.js?v={{$version}}"></script>
+@if (admin_setting('ai_support_enabled', false))
+    <script>
+        (function () {
+            if (window.__airpilotBootstrapInstalled) return;
+            window.__airpilotBootstrapInstalled = true;
+
+            var widgetScriptLoaded = false;
+            var widgetStarted = false;
+
+            function getAuthToken() {
+                try {
+                    var raw = window.localStorage.getItem('authorization');
+                    if (!raw) return '';
+                    if (raw.indexOf('{') === 0) {
+                        var parsed = JSON.parse(raw);
+                        return parsed && parsed.value ? String(parsed.value).replace(/^Bearer\s+/i, '') : '';
+                    }
+                    return String(raw).replace(/^Bearer\s+/i, '');
+                } catch (e) {
+                    return '';
+                }
+            }
+
+            function currentHash() {
+                return (window.location.hash || '').toLowerCase();
+            }
+
+            function shouldStart() {
+                var hash = currentHash();
+                if (!hash || hash === '#/' || hash.indexOf('#/dashboard') === 0) return true;
+                if (hash.indexOf('#/login') === 0 || hash.indexOf('#/register') === 0 || hash.indexOf('#/forget') === 0) {
+                    return false;
+                }
+                return true;
+            }
+
+            function initWidget() {
+                if (widgetStarted || !window.AirPilot || !window.AirPilot.init) return;
+                var token = getAuthToken();
+                if (!token || !shouldStart()) return;
+
+                widgetStarted = true;
+                window.AirPilot.init({
+                    apiBaseUrl: '/api/v1/user/ai-support',
+                    authToken: token,
+                    locale: (window.localStorage.getItem('i18nextLng') || 'zh-CN'),
+                    theme: 'auto',
+                    widgetName: 'AI 客服',
+                    aiNickname: 'AirPilot',
+                    enableEscalation: true,
+                    enableAttachments: false
+                });
+            }
+
+            function ensureScript() {
+                if (widgetScriptLoaded) {
+                    initWidget();
+                    return;
+                }
+                widgetScriptLoaded = true;
+                var script = document.createElement('script');
+                script.src = '/plugins/ai-support/widget/airpilot-widget.js';
+                script.async = true;
+                script.onload = initWidget;
+                document.head.appendChild(script);
+            }
+
+            function tick() {
+                if (widgetStarted) return;
+                if (!getAuthToken() || !shouldStart()) return;
+                ensureScript();
+            }
+
+            setInterval(tick, 1000);
+            window.addEventListener('hashchange', tick);
+            window.addEventListener('load', tick);
+            tick();
+        })();
+    </script>
+@endif
 @if (file_exists(public_path("/theme/{$theme}/assets/custom.js")))
     <script src="/theme/{{$theme}}/assets/custom.js?v={{$version}}"></script>
 @endif

@@ -1,0 +1,17 @@
+{
+  "name": "airpilot-widget",
+  "version": "1.0.0",
+  "description": "AirPilot AI Customer Support chat widget",
+  "private": true,
+  "scripts": {
+    "build": "node build.js",
+    "watch": "node build.js --watch"
+  },
+  "devDependencies": {
+    "esbuild": "^0.24.0"
+  },
+  "dependencies": {
+    "dompurify": "^3.2.4",
+    "marked": "^15.0.6"
+  }
+}

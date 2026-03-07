@@ -1,0 +1,27 @@
+{
+  "name": "AirPilot AI Support",
+  "code": "ai_support",
+  "version": "1.2.1",
+  "description": "AirPilot connector, widget, escalation, and AI support integration for Xboard.",
+  "author": "AirPilot",
+  "author_url": "https://airgate.dev",
+  "require": {
+    "xboard": ">=2.0.0",
+    "php": ">=8.2"
+  },
+  "config": {
+    "connect_url": {
+      "label": "AirPilot Connect URL",
+      "type": "string",
+      "default": "",
+      "placeholder": "Paste the one-time Xboard connect URL from AirPilot",
+      "description": "One field only. The plugin will exchange this URL for all hidden credentials automatically."
+    },
+    "widget_enabled": {
+      "label": "Auto-Mount Widget",
+      "type": "boolean",
+      "default": true,
+      "description": "Inject the chat widget into the active frontend theme via theme custom_html."
+    }
+  }
+}
