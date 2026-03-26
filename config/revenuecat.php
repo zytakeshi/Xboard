@@ -74,6 +74,20 @@ return [
         ],
 
         // ===========================================
+        // NATIVE iOS APP (App Store)
+        // ===========================================
+        'com.vpncheap.iosnative.premium.monthly' => [
+            'plan_id' => (int) env('REVENUECAT_MONTHLY_PLAN_ID', 21),
+            'period' => 'monthly',
+            'type' => 'non_renewing',
+        ],
+        'com.vpncheap.iosnative.premium.yearly' => [
+            'plan_id' => (int) env('REVENUECAT_YEARLY_PLAN_ID', 21),
+            'period' => 'yearly',
+            'type' => 'non_renewing',
+        ],
+
+        // ===========================================
         // SANDBOX (Test Store)
         // ===========================================
         'monthly' => [
