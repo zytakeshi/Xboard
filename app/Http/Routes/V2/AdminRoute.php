@@ -18,6 +18,8 @@ use App\Http\Controllers\V2\Admin\PaymentController;
 use App\Http\Controllers\V2\Admin\SystemController;
 use App\Http\Controllers\V2\Admin\ThemeController;
 use App\Http\Controllers\V2\Admin\TrafficResetController;
+use App\Http\Controllers\V2\Admin\NodeFilterController;
+use App\Http\Controllers\V2\Admin\ApiFailoverController;
 use Illuminate\Contracts\Routing\Registrar;
 
 class AdminRoute
@@ -267,6 +269,26 @@ class AdminRoute
                 $router->get('stats', [TrafficResetController::class, 'stats']);
                 $router->get('user/{userId}/history', [TrafficResetController::class, 'userHistory']);
                 $router->post('reset-user', [TrafficResetController::class, 'resetUser']);
+            });
+
+            // API Failover Management — restoring the route group that the
+            // hot-patch (xboard_patches/install.sh) overlays at runtime so
+            // that fresh image rebuilds from this fork don't ship the
+            // existing ApiFailoverController.php as dead code.
+            $router->group([
+                'prefix' => 'api-failover'
+            ], function ($router) {
+                $router->get('/fetch', [ApiFailoverController::class, 'fetch']);
+                $router->post('/save', [ApiFailoverController::class, 'save']);
+                $router->post('/test', [ApiFailoverController::class, 'test']);
+            });
+
+            // Node route filter mode (server-controlled 专线/直连 toggle)
+            $router->group([
+                'prefix' => 'node-filter'
+            ], function ($router) {
+                $router->get('/fetch', [NodeFilterController::class, 'fetch']);
+                $router->post('/configure', [NodeFilterController::class, 'configure']);
             });
         });
 
