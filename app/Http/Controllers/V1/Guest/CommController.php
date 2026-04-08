@@ -12,7 +12,7 @@ class CommController extends Controller
 {
     public function config()
     {
-        $data = [
+        $data = ['app_name'=>'VPNCheap',
             'tos_url' => admin_setting('tos_url'),
             'is_email_verify' => (int) admin_setting('email_verify', 0) ? 1 : 0,
             'is_invite_force' => (int) admin_setting('invite_force', 0) ? 1 : 0,
@@ -32,6 +32,11 @@ class CommController extends Controller
             'is_recaptcha' => (int) admin_setting('captcha_enable', 0) ? 1 : 0,
             // Payment visibility configuration for H5 payments
             'payment_config' => $this->getPaymentConfig(),
+            // Server-controlled 专线/直连 route filter toggle. Absent or
+            // false → clients merge transit and direct nodes into a
+            // single premium list (mix mode). Set to true to restore the
+            // legacy tabbed behavior.
+            'node_filter_config' => $this->getNodeFilterConfig(),
         ];
 
         $data = HookManager::filter('guest_comm_config', $data);
@@ -62,7 +67,35 @@ class CommController extends Controller
                 return array_merge($defaultConfig, $config);
             }
         }
-        
+
+        return $defaultConfig;
+    }
+
+    /**
+     * Get server-controlled node route filter configuration.
+     *
+     * Absent field or `route_filter_enabled = false` → mix mode (clients
+     * merge 专线/直连 into one flat premium list). `true` → legacy
+     * tabbed behavior. Mirrors the IAP/H5-payment visibility pattern.
+     *
+     * @return array Node filter configuration settings
+     */
+    private function getNodeFilterConfig()
+    {
+        $configPath = storage_path('app/node_filter_config.json');
+        $defaultConfig = [
+            'route_filter_enabled' => false,
+            'config_version' => '1.0.0',
+        ];
+
+        if (file_exists($configPath)) {
+            $fileContent = file_get_contents($configPath);
+            $config = json_decode($fileContent, true);
+            if ($config && is_array($config)) {
+                return array_merge($defaultConfig, $config);
+            }
+        }
+
         return $defaultConfig;
     }
 }
