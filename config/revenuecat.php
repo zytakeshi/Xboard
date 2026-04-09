@@ -76,6 +76,16 @@ return [
         // ===========================================
         // NATIVE iOS APP (App Store)
         // ===========================================
+        // NOTE: The live ASC product IDs are asymmetric — monthly is ".month"
+        // (singular) while yearly is ".yearly". Product IDs are immutable in
+        // ASC once a transaction exists, so the backend must accept both
+        // spellings. ".month" is the canonical live product; ".monthly" is
+        // kept as a harmless alias in case a future product uses that form.
+        'com.vpncheap.iosnative.premium.month' => [
+            'plan_id' => (int) env('REVENUECAT_MONTHLY_PLAN_ID', 21),
+            'period' => 'monthly',
+            'type' => 'non_renewing',
+        ],
         'com.vpncheap.iosnative.premium.monthly' => [
             'plan_id' => (int) env('REVENUECAT_MONTHLY_PLAN_ID', 21),
             'period' => 'monthly',
