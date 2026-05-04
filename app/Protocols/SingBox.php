@@ -429,7 +429,12 @@ class SingBox extends AbstractProtocol
             'tls' => [
                 'enabled' => true,
                 'insecure' => (bool) data_get($protocol_settings, 'tls.allow_insecure', false),
-                'alpn' => data_get($protocol_settings, 'alpn', ['h3']),
+                // AnyTLS runs over TCP, so the upstream default of ['h3'] (HTTP/3
+                // over QUIC) causes soga and other AnyTLS servers to abort the
+                // handshake with `unsupported application protocols (["h3"])`.
+                // The admin UI does not expose ALPN for AnyTLS, so every node
+                // falls into this default branch — must be h2/http/1.1.
+                'alpn' => data_get($protocol_settings, 'alpn', ['h2', 'http/1.1']),
             ]
         ];
 
