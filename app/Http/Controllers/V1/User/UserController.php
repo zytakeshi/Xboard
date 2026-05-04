@@ -132,7 +132,11 @@ class UserController extends Controller
 
     public function getSubscribe(Request $request)
     {
-        $user = User::where('id', $request->user()->id)
+        $authUser = $request->user();
+        if (!$authUser) {
+            return $this->fail([401, __('Unauthorized')]);
+        }
+        $user = User::where('id', $authUser->id)
             ->select([
                 'id',
                 'plan_id',
