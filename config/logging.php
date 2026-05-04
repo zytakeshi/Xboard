@@ -101,11 +101,25 @@ return [
             'level' => 'debug',
         ],
 
+        // Deprecations route to whichever channels LOG_DEPRECATIONS_CHANNELS
+        // names (comma-separated). Default is 'null' so production stays quiet
+        // — set LOG_DEPRECATIONS_CHANNELS=deprecations_daily in local/staging
+        // to recover visibility while we work through outdated dependencies.
         'deprecations' => [
+            'driver' => 'stack',
+            'channels' => explode(',', env('LOG_DEPRECATIONS_CHANNELS', 'null')),
+        ],
+
+        'deprecations_daily' => [
             'driver' => 'daily',
             'path' => storage_path('logs/deprecations.log'),
             'level' => 'debug',
             'days' => 14,
+        ],
+
+        'null' => [
+            'driver' => 'monolog',
+            'handler' => \Monolog\Handler\NullHandler::class,
         ],
     ],
 
