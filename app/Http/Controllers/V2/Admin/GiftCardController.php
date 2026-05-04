@@ -231,13 +231,14 @@ class GiftCardController extends Controller
             'template_id' => 'required|integer|exists:v2_gift_card_template,id',
             'count' => 'required|integer|min:1|max:10000',
             'prefix' => 'nullable|string|max:10|regex:/^[A-Z0-9]*$/',
-            'expires_hours' => 'nullable|integer|min:1',
+            'expires_hours' => 'nullable|integer|min:1|max:87600',
             'max_usage' => 'integer|min:1|max:1000',
         ], [
             'template_id.required' => '请选择礼品卡模板',
             'count.required' => '请指定生成数量',
             'count.max' => '单次最多生成10000个兑换码',
             'prefix.regex' => '前缀只能包含大写字母和数字',
+            'expires_hours.max' => '有效期最长10年（87600小时）',
         ]);
 
         $template = GiftCardTemplate::find($request->input('template_id'));
