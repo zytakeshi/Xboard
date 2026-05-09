@@ -69,7 +69,22 @@ class RevenueCatService
         }
 
         if ($environment === 'SANDBOX') {
-            $sandboxUser = $this->findUser($event);
+            // Match the fallback policy that the matching production-side
+            // handler would use: paid event types (TestFlight purchases) get
+            // the subscriber-attribute fallback so we can still resolve the
+            // user when canonical IDs are anonymous; destructive types
+            // (CANCELLATION / REFUND / EXPIRATION / PRODUCT_CHANGE) do not.
+            // Without this, a sandbox NON_RENEWING_PURCHASE with anonymous
+            // canonical IDs would be markProcessed() here and never reach
+            // handlePaidEvent, defeating the recovery path on TestFlight.
+            $allowAttrFallback = in_array($eventType, [
+                'INITIAL_PURCHASE',
+                'RENEWAL',
+                'TRIAL_STARTED',
+                'TRIAL_CONVERTED',
+                'NON_RENEWING_PURCHASE',
+            ], true);
+            $sandboxUser = $this->findUser($event, allowSubscriberAttributeFallback: $allowAttrFallback);
             if (!$sandboxUser) {
                 $rcEvent->markProcessed();
                 Log::info('RevenueCat: Sandbox event ignored, user not found', [
@@ -128,8 +143,117 @@ class RevenueCatService
             'NON_RENEWING_PURCHASE' => $this->handleNonRenewingPurchase($event),
             'REFUND' => $this->handleRefund($event),
             'REFUND_REVERSED' => $this->handleRefundReversed($event),
+            'TRANSFER' => $this->handleTransfer($event),
             default => ['success' => true, 'message' => "Unhandled event type: $type"],
         };
+    }
+
+    /**
+     * Recover orphaned anonymous purchases.
+     *
+     * RevenueCat sends a TRANSFER event whenever a customer's set of app_user_ids
+     * changes — most commonly when a user that was making purchases under
+     * `$RCAnonymousID:…` later signs in and we alias the anonymous identity to
+     * their xboard user ID. Any purchase webhooks that arrived during the
+     * anonymous window were rejected with `User not found` (issue #26's exact
+     * symptom). This handler walks back through those orphaned events and
+     * replays them under the resolved identity so the user receives the plan
+     * they paid for, without manual support intervention.
+     */
+    protected function handleTransfer(array $event): array
+    {
+        $resolvedUser = $this->findUser($event);
+        if (!$resolvedUser) {
+            // No xboard identity in the TRANSFER's `transferred_to` candidates —
+            // nothing to replay onto. This is normal for transfers between two
+            // anonymous IDs and does not represent a failure.
+            return ['success' => true, 'message' => 'TRANSFER ignored: no xboard user in transferred_to'];
+        }
+
+        $fromIds = array_values(array_filter(
+            (array) ($event['transferred_from'] ?? []),
+            static fn ($value) => is_string($value) && $value !== ''
+        ));
+        if (!$fromIds) {
+            return ['success' => true, 'message' => 'TRANSFER acknowledged: no transferred_from'];
+        }
+
+        $orphaned = RevenueCatEvent::where('processed', false)
+            ->whereIn('app_user_id', $fromIds)
+            ->orderBy('created_at')
+            ->get();
+
+        if ($orphaned->isEmpty()) {
+            return ['success' => true, 'message' => 'TRANSFER acknowledged: no orphaned events'];
+        }
+
+        $replayed = 0;
+        $stillFailing = 0;
+        foreach ($orphaned as $orphan) {
+            $payload = is_array($orphan->payload) ? $orphan->payload : json_decode((string) $orphan->payload, true);
+            $orphanEvent = $payload['event'] ?? null;
+            if (!is_array($orphanEvent)) {
+                // Garbage/legacy stored payload — do not silently skip; mark
+                // failed so it shows up in monitoring and is not pretended to be
+                // resolved by a later TRANSFER.
+                $orphan->markFailed('TRANSFER replay failed: stored payload is not an array');
+                $stillFailing++;
+                continue;
+            }
+
+            // Inject the resolved xboard user as a candidate so `findUser()` will
+            // pick it up when `handleEvent` runs below. We do not overwrite the
+            // original app_user_id — keeping the receipt's original RC identity
+            // makes audit trails honest.
+            $existingAliases = (array) ($orphanEvent['aliases'] ?? []);
+            $orphanEvent['aliases'] = array_values(array_unique(array_merge(
+                $existingAliases,
+                [(string) $resolvedUser->id]
+            )));
+
+            try {
+                $result = $this->handleEvent($orphanEvent);
+                if (($result['success'] ?? false) === true) {
+                    $orphan->markProcessed();
+                    $replayed++;
+                } else {
+                    $orphan->markFailed($result['error'] ?? 'TRANSFER replay failed');
+                    $stillFailing++;
+                }
+            } catch (\Throwable $e) {
+                $orphan->markFailed($e->getMessage());
+                $stillFailing++;
+                Log::error('RevenueCat: TRANSFER replay threw', [
+                    'orphan_event_id' => $orphan->event_id,
+                    'error' => $e->getMessage(),
+                ]);
+            }
+        }
+
+        Log::info('RevenueCat: TRANSFER replay summary', [
+            'resolved_user_id' => $resolvedUser->id,
+            'transferred_from' => $fromIds,
+            'replayed' => $replayed,
+            'still_failing' => $stillFailing,
+        ]);
+
+        // If any orphan failed to replay, return failure so `processWebhook()`
+        // does NOT mark this TRANSFER row as processed. RevenueCat will retry
+        // the webhook for up to 72h, giving the system another shot at draining
+        // the orphan queue (e.g. after a transient DB issue or bad plan-mapping
+        // is corrected). Marking processed here would silently strand the
+        // automated recovery path.
+        if ($stillFailing > 0) {
+            return [
+                'success' => false,
+                'error' => "TRANSFER replay incomplete: replayed=$replayed, still_failing=$stillFailing",
+            ];
+        }
+
+        return [
+            'success' => true,
+            'message' => "TRANSFER processed: replayed=$replayed",
+        ];
     }
 
     protected function handleInitialPurchase(array $event): array
@@ -164,7 +288,15 @@ class RevenueCatService
 
     protected function handleProductChange(array $event): array
     {
-        return $this->handlePaidEvent($event, Order::TYPE_UPGRADE);
+        // PRODUCT_CHANGE mutates an existing user's plan, so we treat it like
+        // CANCELLATION/REFUND for fallback purposes — canonical IDs only,
+        // never subscriber attributes (which a holder of the RC public key
+        // could use to redirect plan changes onto an unrelated xboard user).
+        return $this->handlePaidEvent(
+            $event,
+            Order::TYPE_UPGRADE,
+            allowSubscriberAttributeFallback: false
+        );
     }
 
     protected function handleCancellation(array $event): array
@@ -328,9 +460,19 @@ class RevenueCatService
         array $event,
         int $orderType,
         bool $isTrial = false,
-        bool $isNonRenewing = false
+        bool $isNonRenewing = false,
+        bool $allowSubscriberAttributeFallback = true
     ): array {
-        $user = $this->findUser($event);
+        // Subscriber-attribute fallback is opt-in per call site. New-purchase /
+        // renewal / trial flows turn it ON so an anonymous-attributed iOS
+        // receipt can still credit the right user (issue #26 root cause).
+        // PRODUCT_CHANGE / refund / cancellation / expiration / billing-issue
+        // flows turn it OFF — those mutate existing state and must only act
+        // on canonical RevenueCat IDs.
+        $user = $this->findUser(
+            $event,
+            allowSubscriberAttributeFallback: $allowSubscriberAttributeFallback
+        );
         if (!$user) {
             return ['success' => false, 'error' => 'User not found'];
         }
@@ -577,12 +719,18 @@ class RevenueCatService
         return $parsed ?: null;
     }
 
-    protected function findUser(array $event): ?User
+    /**
+     * Canonical RevenueCat identity candidates for an event: `app_user_id`,
+     * `original_app_user_id`, `aliases`, and (for TRANSFER) `transferred_to`.
+     * RevenueCat manages these IDs server-to-server, so they are not spoofable
+     * by anyone holding only the RC public key.
+     */
+    protected function canonicalRevenueCatCandidates(array $event): array
     {
         $candidates = [];
+
         $appUserId = $event['app_user_id'] ?? null;
         $originalAppUserId = $event['original_app_user_id'] ?? null;
-        $aliases = $event['aliases'] ?? [];
 
         if ($appUserId) {
             $candidates[] = $appUserId;
@@ -590,17 +738,71 @@ class RevenueCatService
         if ($originalAppUserId && $originalAppUserId !== $appUserId) {
             $candidates[] = $originalAppUserId;
         }
-        if (is_array($aliases)) {
-            foreach ($aliases as $alias) {
-                if ($alias && !in_array($alias, $candidates, true)) {
-                    $candidates[] = $alias;
-                }
+        foreach ((array) ($event['aliases'] ?? []) as $alias) {
+            if ($alias && !in_array($alias, $candidates, true)) {
+                $candidates[] = $alias;
+            }
+        }
+        // TRANSFER events do not populate `app_user_id`/`aliases`; the resolved
+        // identity lives in `transferred_to` instead. Including those keeps a
+        // single resolution path for every event type. `transferred_from` is
+        // intentionally excluded — that is the SOURCE side of the transfer and
+        // would re-credit purchases to a user RC has already moved away from.
+        foreach ((array) ($event['transferred_to'] ?? []) as $alias) {
+            if ($alias && !in_array($alias, $candidates, true)) {
+                $candidates[] = $alias;
             }
         }
 
+        return $candidates;
+    }
+
+    /**
+     * True when every canonical candidate is RevenueCat's anonymous placeholder.
+     * Used to gate the subscriber-attribute fallback: trusting attributes when a
+     * canonical ID is present would let any holder of the RC public key spoof an
+     * arbitrary xboard user.
+     *
+     * An empty candidate list is NOT treated as "all anonymous" — a malformed
+     * webhook with no `app_user_id` / `original_app_user_id` / `aliases` /
+     * `transferred_to` should fail closed rather than fall through to public
+     * subscriber attributes.
+     */
+    protected function onlyAnonymousRevenueCatIds(array $candidates): bool
+    {
         if (!$candidates) {
-            return null;
+            return false;
         }
+        foreach ($candidates as $candidate) {
+            if (!is_string($candidate) || !str_starts_with($candidate, '$RCAnonymousID:')) {
+                return false;
+            }
+        }
+        return true;
+    }
+
+    /**
+     * Resolve a User from a RevenueCat event.
+     *
+     * Subscriber attributes are public-key writable (per RevenueCat SDK docs:
+     * "attributes are writable using a public key … should not be used for
+     * managing secure or sensitive information"). To prevent a malicious or
+     * misconfigured client from claiming another user's identity by setting
+     * `xboard_user_id` / `$email` arbitrarily, we only consult those attributes
+     * when:
+     *
+     *   1. The caller explicitly opts in (`$allowSubscriberAttributeFallback`),
+     *   2. Every canonical candidate is `$RCAnonymousID:…` (i.e. we have no
+     *      server-side-managed identity to honor in the first place), and
+     *   3. BOTH `xboard_user_id` and `$email` are present and resolve to the
+     *      same User row (cross-checked, case-insensitive on email).
+     *
+     * Destructive event types (CANCELLATION, REFUND, EXPIRATION, …) leave the
+     * fallback off entirely and only act on canonical IDs.
+     */
+    protected function findUser(array $event, bool $allowSubscriberAttributeFallback = false): ?User
+    {
+        $candidates = $this->canonicalRevenueCatCandidates($event);
 
         foreach ($candidates as $candidate) {
             if (is_numeric($candidate)) {
@@ -616,7 +818,27 @@ class RevenueCatService
             }
         }
 
-        return null;
+        if (!$allowSubscriberAttributeFallback || !$this->onlyAnonymousRevenueCatIds($candidates)) {
+            return null;
+        }
+
+        $attrs = $event['subscriber_attributes'] ?? [];
+        if (!is_array($attrs)) {
+            return null;
+        }
+
+        $xboardId = $attrs['xboard_user_id']['value'] ?? null;
+        $email = $attrs['$email']['value'] ?? null;
+        if (!ctype_digit((string) $xboardId)
+            || !is_string($email)
+            || trim($email) === ''
+        ) {
+            return null;
+        }
+
+        return User::whereKey((int) $xboardId)
+            ->whereRaw('LOWER(email) = ?', [strtolower(trim($email))])
+            ->first();
     }
 
     protected function getPlanMapping(array $event): ?array
