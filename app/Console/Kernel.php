@@ -2,6 +2,7 @@
 
 namespace App\Console;
 
+use App\Services\Plugin\PluginManager;
 use App\Utils\CacheKey;
 use Illuminate\Console\Scheduling\Schedule;
 use Illuminate\Foundation\Console\Kernel as ConsoleKernel;
@@ -16,7 +17,7 @@ class Kernel extends ConsoleKernel
      * @var array
      */
     protected $commands = [
-        //
+        \App\Console\Commands\RevenueCatOrphanReconciler::class,
     ];
 
     /**
@@ -25,7 +26,7 @@ class Kernel extends ConsoleKernel
      * @param \Illuminate\Console\Scheduling\Schedule $schedule
      * @return void
      */
-    protected function schedule(Schedule $schedule)
+    protected function schedule(Schedule $schedule): void
     {
         Cache::put(CacheKey::get('SCHEDULE_LAST_CHECK_AT', null), time());
         // v2board
@@ -34,6 +35,11 @@ class Kernel extends ConsoleKernel
         $schedule->command('check:order')->everyMinute()->onOneServer();
         $schedule->command('check:commission')->everyMinute()->onOneServer();
         $schedule->command('check:ticket')->everyMinute()->onOneServer();
+        // RevenueCat IAP orphan event reconciliation
+        $schedule->command('revenuecat:reconcile-orphans')
+            ->everyFifteenMinutes()
+            ->onOneServer()
+            ->withoutOverlapping();
         // reset
         $schedule->command('reset:traffic')->everyMinute()->onOneServer();
         $schedule->command('reset:log')->daily()->onOneServer();
@@ -48,7 +54,10 @@ class Kernel extends ConsoleKernel
         // 每分钟清理过期的在线状态
         $schedule->call(function () {
             app(UserOnlineService::class)->cleanExpiredOnlineStatus();
-        })->everyMinute();
+        })->everyMinute()->name('cleanup:expired-online-status')->onOneServer();
+
+        app(PluginManager::class)->registerPluginSchedules($schedule);
+
     }
 
     /**
@@ -60,6 +69,10 @@ class Kernel extends ConsoleKernel
     {
         $this->load(__DIR__ . '/Commands');
 
+        try {
+            app(PluginManager::class)->initializeEnabledPlugins();
+        } catch (\Exception $e) {
+        }
         require base_path('routes/console.php');
     }
 }

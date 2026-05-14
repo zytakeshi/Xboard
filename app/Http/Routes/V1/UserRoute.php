@@ -4,6 +4,7 @@ namespace App\Http\Routes\V1;
 use App\Http\Controllers\V1\User\CommController;
 use App\Http\Controllers\V1\User\CouponController;
 use App\Http\Controllers\V1\User\GiftCardController;
+use App\Http\Controllers\V1\User\IapRecoveryController;
 use App\Http\Controllers\V1\User\InviteController;
 use App\Http\Controllers\V1\User\KnowledgeController;
 use App\Http\Controllers\V1\User\NodeDiagnosticController;
@@ -82,6 +83,8 @@ class UserRoute
             $router->get('/knowledge/getCategory', [KnowledgeController::class, 'getCategory']);
             // Stat
             $router->get('/stat/getTrafficLog', [StatController::class, 'getTrafficLog']);
+            // IAP Recovery (RevenueCat orphan receipt reconciliation)
+            $router->post('/iap/recover-receipt', [IapRecoveryController::class, 'recoverReceipt']);
         });
     }
 }
