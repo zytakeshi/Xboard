@@ -34,6 +34,30 @@ return [
 
     /*
     |--------------------------------------------------------------------------
+    | RevenueCat Secret API Key (V2)
+    |--------------------------------------------------------------------------
+    | Server-side REST API key (Bearer) from the RevenueCat dashboard. We use
+    | the V2 customer endpoints (`/v2/projects/{project_id}/customers/...`)
+    | because the issued key family is V2-only (V1 calls fail with
+    | "7723 incompatible with RevenueCat API V1"). Used by the orphan-recovery
+    | path to walk the full alias chain + subscriber attributes when a paid
+    | webhook arrived under an anonymous identity ($RCAnonymousID:…) and the
+    | client never sent a follow-up TRANSFER (e.g. NON_RENEWING_PURCHASE
+    | products, which RC does not transfer on logIn).
+    */
+    'secret_api_key' => env('REVENUECAT_SECRET_API_KEY', ''),
+
+    /*
+    |--------------------------------------------------------------------------
+    | RevenueCat Project ID
+    |--------------------------------------------------------------------------
+    | V2 endpoints are scoped under a project. For Vpncheap this is
+    | `proje547f576`. Override via REVENUECAT_PROJECT_ID if rotated.
+    */
+    'project_id' => env('REVENUECAT_PROJECT_ID', 'proje547f576'),
+
+    /*
+    |--------------------------------------------------------------------------
     | Environment
     |--------------------------------------------------------------------------
     | Process only matching events. Set to ALL to accept both.

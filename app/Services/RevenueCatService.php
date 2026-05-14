@@ -3,10 +3,12 @@
 namespace App\Services;
 
 use App\Models\Order;
+use App\Models\RevenueCatAlias;
 use App\Models\RevenueCatEvent;
 use App\Models\User;
 use App\Utils\Helper;
 use App\Services\OrderService;
+use Illuminate\Support\Facades\Http;
 use Illuminate\Support\Facades\Log;
 use Illuminate\Support\Str;
 
@@ -109,6 +111,13 @@ class RevenueCatService
 
         try {
             $result = $this->handleEvent($event);
+            // Pending = identity not yet resolvable (e.g. anonymous RC ID with
+            // no alias mapping yet). Keep the row processed=0 with a sentinel
+            // error so the reconciler / recover-endpoint can later replay it.
+            if (($result['pending'] ?? false) === true) {
+                $rcEvent->markFailed($result['message'] ?? 'awaiting_identity');
+                return ['success' => true, 'message' => 'queued pending identity'];
+            }
             if (($result['success'] ?? false) === true) {
                 $rcEvent->markProcessed();
             } else {
@@ -174,6 +183,42 @@ class RevenueCatService
             (array) ($event['transferred_from'] ?? []),
             static fn ($value) => is_string($value) && $value !== ''
         ));
+
+        // Walk the full RC alias chain via the V2 customer endpoint so
+        // multi-hop transfers (anon → intermediate → final xboard ID) are
+        // covered: take the first transferred_to candidate, fetch its alias
+        // list, and union them into $fromIds. Without this, an orphan
+        // attributed to a grand-parent anon ID is invisible to this replay
+        // loop.
+        $transferredTo = (array) ($event['transferred_to'] ?? []);
+        $primaryTo = null;
+        foreach ($transferredTo as $cand) {
+            if (is_string($cand) && $cand !== '') {
+                $primaryTo = $cand;
+                break;
+            }
+        }
+        if ($primaryTo) {
+            $customer = $this->fetchRevenueCatCustomer($primaryTo);
+            if ($customer) {
+                foreach ($customer['aliases'] as $aliasId) {
+                    if ($aliasId !== '' && !in_array($aliasId, $fromIds, true)) {
+                        $fromIds[] = $aliasId;
+                    }
+                }
+            }
+        }
+
+        // Always persist alias links to enable reverse lookups for future
+        // anonymous-id-orphan events from any of the from-side IDs — even when
+        // there is no orphan to replay right now.
+        foreach ($fromIds as $fromId) {
+            $this->rememberRevenueCatAlias($fromId, $resolvedUser->id, 'transfer');
+        }
+        if ($primaryTo && $primaryTo !== (string) $resolvedUser->id) {
+            $this->rememberRevenueCatAlias($primaryTo, $resolvedUser->id, 'transfer');
+        }
+
         if (!$fromIds) {
             return ['success' => true, 'message' => 'TRANSFER acknowledged: no transferred_from'];
         }
@@ -474,6 +519,19 @@ class RevenueCatService
             allowSubscriberAttributeFallback: $allowSubscriberAttributeFallback
         );
         if (!$user) {
+            // Paid events without a resolvable user are NOT terminal failures.
+            // They can still be reconciled later via the alias table or RC
+            // REST chain walk (the in-app /iap/recover-receipt endpoint or
+            // the orphan reconciler cron). Surface a pending result so the
+            // event row is preserved for replay instead of being marked
+            // permanently failed under "User not found".
+            if ($allowSubscriberAttributeFallback) {
+                return [
+                    'success' => true,
+                    'pending' => true,
+                    'message' => 'awaiting_identity',
+                ];
+            }
             return ['success' => false, 'error' => 'User not found'];
         }
 
@@ -489,8 +547,19 @@ class RevenueCatService
         $user->subscription_will_renew = $isSandbox ? false : ($isNonRenewing ? false : true);
         $user->subscription_billing_issue = false;
         $user->subscription_grace_period_expires_at = null;
-        $user->revenuecat_app_user_id = $event['app_user_id'] ?? $user->revenuecat_app_user_id;
+        // Only adopt the receipt's app_user_id as the user's canonical RC
+        // identity when it is NOT the anonymous placeholder. Persisting the
+        // anon ID into `users.revenuecat_app_user_id` would poison every
+        // future canonical-ID lookup for this user. Always mirror the mapping
+        // into the alias table for reverse lookup.
+        $appUserId = $event['app_user_id'] ?? null;
+        if ($appUserId && !str_starts_with((string) $appUserId, '$RCAnonymousID:')) {
+            $user->revenuecat_app_user_id = $appUserId;
+        }
         $user->save();
+        if ($appUserId) {
+            $this->rememberRevenueCatAlias((string) $appUserId, $user->id, 'paid_event');
+        }
 
         return [
             'success' => true,
@@ -818,6 +887,22 @@ class RevenueCatService
             }
         }
 
+        // Alias-table reverse lookup: covers the case where a paid event
+        // arrives under an anonymous `$RCAnonymousID:…` that has previously
+        // been mapped to a real xboard user (e.g. by a prior TRANSFER, a
+        // /iap/recover-receipt call, or the orphan reconciler). This must
+        // run BEFORE the subscriber-attribute fallback because alias rows
+        // are signed by server-trusted sources, not the public SDK key.
+        foreach ($candidates as $candidate) {
+            if (!is_string($candidate) || $candidate === '') {
+                continue;
+            }
+            $user = $this->lookupAliasUser($candidate);
+            if ($user) {
+                return $user;
+            }
+        }
+
         if (!$allowSubscriberAttributeFallback || !$this->onlyAnonymousRevenueCatIds($candidates)) {
             return null;
         }
@@ -849,5 +934,428 @@ class RevenueCatService
         }
 
         return $this->config['product_plan_mapping'][$productId] ?? null;
+    }
+
+    /**
+     * Persist (or refresh) an alias row mapping a RevenueCat app_user_id to
+     * an xboard user. Idempotent on `app_user_id` (unique index). `$source`
+     * records why the alias was learned for forensics: transfer, paid_event,
+     * reconciler, recover_endpoint, login, …
+     *
+     * The RevenueCatAlias model has $timestamps = false and stores integer
+     * Unix timestamps in created_at/updated_at, so we manage them manually.
+     */
+    protected function rememberRevenueCatAlias(string $appUserId, int $userId, string $source): void
+    {
+        if ($appUserId === '' || $userId <= 0) {
+            return;
+        }
+        $now = time();
+        try {
+            $existing = RevenueCatAlias::where('app_user_id', $appUserId)->first();
+            if ($existing) {
+                $existing->user_id = $userId;
+                $existing->source = $source;
+                $existing->updated_at = $now;
+                $existing->save();
+                return;
+            }
+            $alias = new RevenueCatAlias();
+            $alias->app_user_id = $appUserId;
+            $alias->user_id = $userId;
+            $alias->source = $source;
+            $alias->created_at = $now;
+            $alias->updated_at = $now;
+            $alias->save();
+        } catch (\Throwable $e) {
+            // Race: a concurrent webhook may have inserted the same
+            // app_user_id between SELECT and INSERT (unique constraint).
+            // Treat that as "already remembered" and best-effort refresh.
+            Log::warning('RevenueCat: alias persist conflict, retrying as update', [
+                'app_user_id' => $appUserId,
+                'user_id' => $userId,
+                'err' => $e->getMessage(),
+            ]);
+            try {
+                RevenueCatAlias::where('app_user_id', $appUserId)
+                    ->update(['user_id' => $userId, 'source' => $source, 'updated_at' => $now]);
+            } catch (\Throwable $e2) {
+                Log::warning('RevenueCat: alias update fallback failed', [
+                    'app_user_id' => $appUserId,
+                    'err' => $e2->getMessage(),
+                ]);
+            }
+        }
+    }
+
+    /**
+     * Reverse-lookup a User by RevenueCat app_user_id via the alias table.
+     */
+    protected function lookupAliasUser(string $appUserId): ?User
+    {
+        if ($appUserId === '') {
+            return null;
+        }
+        $alias = RevenueCatAlias::where('app_user_id', $appUserId)->first();
+        return $alias ? User::find($alias->user_id) : null;
+    }
+
+    /**
+     * Build the V2 customer base URL for a given app_user_id.
+     *
+     * The issued RC API key family is V2-only — calls to `/v1/subscribers/...`
+     * return error 7723 ("incompatible with RevenueCat API V1"), so customer
+     * data must come from `/v2/projects/{project_id}/customers/{id}` and its
+     * `/aliases` / `/attributes` sub-resources.
+     */
+    protected function rcBaseUrl(string $customerId): string
+    {
+        $projectId = (string) ($this->config['project_id'] ?? config('revenuecat.project_id') ?? '');
+        return 'https://api.revenuecat.com/v2/projects/' . $projectId
+            . '/customers/' . rawurlencode($customerId);
+    }
+
+    /**
+     * GET a RevenueCat V2 URL with the configured secret key. Returns the
+     * decoded JSON body on 2xx, null on 404 / config-missing / non-2xx /
+     * network failure. Never throws — callers degrade gracefully.
+     */
+    protected function rcGet(string $url): ?array
+    {
+        $secret = $this->config['secret_api_key'] ?? config('revenuecat.secret_api_key');
+        $projectId = $this->config['project_id'] ?? config('revenuecat.project_id');
+        if (empty($secret) || empty($projectId)) {
+            Log::warning('RevenueCat V2 not configured', [
+                'has_secret' => !empty($secret),
+                'has_project' => !empty($projectId),
+            ]);
+            return null;
+        }
+        try {
+            $resp = Http::withToken($secret)
+                ->timeout(10)
+                ->get($url);
+            if ($resp->status() === 404) {
+                return null;
+            }
+            if (!$resp->successful()) {
+                Log::warning('RC V2 failed', [
+                    'status' => $resp->status(),
+                    'url' => $url,
+                    'body' => substr((string) $resp->body(), 0, 500),
+                ]);
+                return null;
+            }
+            $body = $resp->json();
+            return is_array($body) ? $body : null;
+        } catch (\Throwable $e) {
+            Log::warning('RC V2 exception', [
+                'err' => $e->getMessage(),
+                'url' => $url,
+            ]);
+            return null;
+        }
+    }
+
+    /**
+     * Fetch a RevenueCat customer's resolved identity bundle (aliases +
+     * curated attributes) via the V2 customer / aliases / attributes
+     * endpoints, returning a flat shape the orphan-recovery paths can
+     * consume directly. Returns null when the customer does not exist
+     * (404) or the key/project is unconfigured.
+     *
+     * Used by the orphan-recovery paths (recover-endpoint, reconciler,
+     * TRANSFER chain-walk) to walk the full alias chain + read $email /
+     * xboard_user_id when the webhook payload itself only contains an
+     * anonymous identity (`$RCAnonymousID:…`).
+     *
+     * @return ?array{aliases: list<string>, email: ?string, xboard_user_id: ?string}
+     */
+    protected function fetchRevenueCatCustomer(string $appUserId): ?array
+    {
+        if ($appUserId === '') {
+            return null;
+        }
+        $base = $this->rcBaseUrl($appUserId);
+
+        // Customer must exist (this verifies key + key access + customer
+        // existence in one shot; everything below assumes a real customer).
+        $cust = $this->rcGet($base);
+        if (!$cust) {
+            return null;
+        }
+
+        $aliasesResp = $this->rcGet($base . '/aliases') ?: [];
+        $aliases = [];
+        foreach ((array) ($aliasesResp['items'] ?? []) as $item) {
+            $id = is_array($item) ? ($item['id'] ?? null) : null;
+            if (is_string($id) && $id !== '') {
+                $aliases[] = $id;
+            }
+        }
+
+        $attrsResp = $this->rcGet($base . '/attributes') ?: [];
+        $attrs = [];
+        foreach ((array) ($attrsResp['items'] ?? []) as $item) {
+            $name = is_array($item) ? ($item['name'] ?? null) : null;
+            if (is_string($name) && $name !== '') {
+                $attrs[$name] = $item['value'] ?? null;
+            }
+        }
+
+        return [
+            'aliases' => $aliases,
+            'email' => isset($attrs['$email']) && $attrs['$email'] !== '' ? (string) $attrs['$email'] : null,
+            'xboard_user_id' => isset($attrs['xboard_user_id']) && $attrs['xboard_user_id'] !== ''
+                ? (string) $attrs['xboard_user_id']
+                : null,
+        ];
+    }
+
+    /**
+     * Recover a single missing IAP order by transaction id, called by the
+     * authenticated `/api/v1/user/iap/recover-receipt` endpoint. The auth'd
+     * xboard user must be verifiable as the owner of the receipt via the
+     * V2 customer endpoints — one of:
+     *
+     *   - a numeric xboard alias inside the customer's alias chain, or
+     *   - the `$email` attribute matching authUser->email (case-insensitive), or
+     *   - the `xboard_user_id` attribute matching authUser->id.
+     *
+     * On success, persists the alias mapping and replays the orphaned
+     * webhook event to create the missing order.
+     *
+     * @return array{success: bool, order_id: ?int, event_id: ?int, message: string}
+     */
+    public function recoverByTransactionId(string $transactionId, ?string $appUserId, User $authUser): array
+    {
+        if ($transactionId === '') {
+            return ['success' => false, 'order_id' => null, 'event_id' => null, 'message' => 'transaction_not_found'];
+        }
+
+        // Locate the orphaned event row. Match on the payload's
+        // event.transaction_id (canonical placement) so we recover even if
+        // the dedicated `transaction_id` column was never populated.
+        $rcEvent = RevenueCatEvent::where('processed', 0)
+            ->whereRaw("JSON_EXTRACT(payload, '$.event.transaction_id') = ?", [$transactionId])
+            ->orderByDesc('id')
+            ->first();
+
+        if (!$rcEvent) {
+            $existing = RevenueCatEvent::whereRaw("JSON_EXTRACT(payload, '$.event.transaction_id') = ?", [$transactionId])
+                ->orderByDesc('id')
+                ->first();
+            if ($existing && $existing->processed) {
+                return [
+                    'success' => true,
+                    'order_id' => null,
+                    'event_id' => $existing->id,
+                    'message' => 'already_processed',
+                ];
+            }
+            return [
+                'success' => false,
+                'order_id' => null,
+                'event_id' => null,
+                'message' => 'transaction_not_found',
+            ];
+        }
+
+        // Verify ownership via RC V2 against the receipt's app_user_id.
+        // We prefer the explicit $appUserId from the client (matches the
+        // identity the iOS SDK is using right now), falling back to whatever
+        // the stored event recorded.
+        $eventAppUserId = ($appUserId !== null && $appUserId !== '') ? $appUserId : (string) $rcEvent->app_user_id;
+        $customer = $this->fetchRevenueCatCustomer($eventAppUserId);
+        $verified = false;
+
+        if ($customer) {
+            foreach ($customer['aliases'] as $alias) {
+                if (is_numeric($alias) && (int) $alias === (int) $authUser->id) {
+                    $verified = true;
+                    break;
+                }
+            }
+            if (!$verified && $customer['email'] !== null
+                && is_string($authUser->email)
+                && strcasecmp($customer['email'], (string) $authUser->email) === 0
+            ) {
+                $verified = true;
+            }
+            if (!$verified && $customer['xboard_user_id'] !== null
+                && (int) $customer['xboard_user_id'] === (int) $authUser->id
+            ) {
+                $verified = true;
+            }
+        }
+
+        if (!$verified) {
+            Log::warning('RevenueCat: recover ownership mismatch', [
+                'auth_user_id' => $authUser->id,
+                'app_user_id' => $eventAppUserId,
+                'transaction_id' => $transactionId,
+            ]);
+            return [
+                'success' => false,
+                'order_id' => null,
+                'event_id' => $rcEvent->id,
+                'message' => 'ownership_mismatch',
+            ];
+        }
+
+        // Persist the alias before replay so findUser() resolves on the
+        // anonymous candidate too.
+        $this->rememberRevenueCatAlias($eventAppUserId, $authUser->id, 'recover_endpoint');
+
+        $payload = is_array($rcEvent->payload) ? $rcEvent->payload : (array) json_decode((string) $rcEvent->payload, true);
+        $event = is_array($payload['event'] ?? null) ? $payload['event'] : $payload;
+        // Inject the auth user id (as string) AND the original app_user_id
+        // into the aliases list so findUser() has multiple ways to land on
+        // the right user, regardless of column state.
+        $existingAliases = (array) ($event['aliases'] ?? []);
+        $event['aliases'] = array_values(array_unique(array_merge(
+            $existingAliases,
+            [(string) $authUser->id, (string) $eventAppUserId]
+        )));
+
+        try {
+            $result = $this->handleEvent($event);
+        } catch (\Throwable $e) {
+            Log::error('RevenueCat: recover replay threw', [
+                'event_id' => $rcEvent->id,
+                'err' => $e->getMessage(),
+            ]);
+            return [
+                'success' => false,
+                'order_id' => null,
+                'event_id' => $rcEvent->id,
+                'message' => 'replay_failed',
+            ];
+        }
+
+        if (($result['success'] ?? false) === true && empty($result['pending'])) {
+            $rcEvent->markProcessed();
+            return [
+                'success' => true,
+                'order_id' => $result['order_id'] ?? null,
+                'event_id' => $rcEvent->id,
+                'message' => 'recovered',
+            ];
+        }
+
+        return [
+            'success' => false,
+            'order_id' => null,
+            'event_id' => $rcEvent->id,
+            'message' => 'replay_failed',
+        ];
+    }
+
+    /**
+     * Scan recent orphaned events and try to resolve each via the RC REST
+     * subscriber endpoint. Mutates rows in-place (markProcessed on success).
+     *
+     * Called by the RevenueCatOrphanReconciler scheduled command. The
+     * $withinMinutes window defaults to 7 days (10080 minutes) so we catch
+     * paid receipts that the user has been sitting on for a while.
+     *
+     * @return array{scanned: int, recovered: int, still_pending: int, errors: list<string>}
+     */
+    public function reconcileOrphans(int $withinMinutes = 10080): array
+    {
+        $cutoff = now()->subMinutes(max(1, $withinMinutes));
+
+        $rows = RevenueCatEvent::where('processed', 0)
+            ->whereIn('error_message', ['User not found', 'awaiting_identity'])
+            ->where('created_at', '>=', $cutoff)
+            ->orderBy('id')
+            ->limit(200)
+            ->get();
+
+        $scanned = 0;
+        $recovered = 0;
+        $stillPending = 0;
+        $errors = [];
+
+        foreach ($rows as $row) {
+            $scanned++;
+            try {
+                $payload = is_array($row->payload) ? $row->payload : (array) json_decode((string) $row->payload, true);
+                $event = is_array($payload['event'] ?? null) ? $payload['event'] : $payload;
+                $appUserId = (string) ($event['app_user_id'] ?? $row->app_user_id ?? '');
+                if ($appUserId === '') {
+                    $stillPending++;
+                    continue;
+                }
+
+                $customer = $this->fetchRevenueCatCustomer($appUserId);
+                $user = null;
+
+                if ($customer) {
+                    // 1. Numeric xboard alias inside the customer's alias chain.
+                    foreach ($customer['aliases'] as $alias) {
+                        if (is_numeric($alias)) {
+                            $candidate = User::find((int) $alias);
+                            if ($candidate) {
+                                $user = $candidate;
+                                break;
+                            }
+                        }
+                    }
+                    // 2. xboard_user_id attribute (cross-checked with email
+                    //    when both present, mirroring findUser()'s strict
+                    //    fallback policy).
+                    if (!$user && $customer['xboard_user_id'] !== null && ctype_digit((string) $customer['xboard_user_id'])) {
+                        $candidate = User::find((int) $customer['xboard_user_id']);
+                        if ($candidate) {
+                            if ($customer['email'] === null
+                                || (is_string($candidate->email)
+                                    && strcasecmp($customer['email'], (string) $candidate->email) === 0)
+                            ) {
+                                $user = $candidate;
+                            }
+                        }
+                    }
+                    // 3. Email-only fallback.
+                    if (!$user && $customer['email'] !== null && trim($customer['email']) !== '') {
+                        $user = User::whereRaw('LOWER(email) = ?', [strtolower(trim($customer['email']))])->first();
+                    }
+                }
+
+                if (!$user) {
+                    $stillPending++;
+                    continue;
+                }
+
+                $this->rememberRevenueCatAlias($appUserId, $user->id, 'reconciler');
+
+                $existingAliases = (array) ($event['aliases'] ?? []);
+                $event['aliases'] = array_values(array_unique(array_merge(
+                    $existingAliases,
+                    [(string) $user->id, $appUserId]
+                )));
+
+                $result = $this->handleEvent($event);
+                if (($result['success'] ?? false) === true && empty($result['pending'])) {
+                    $row->markProcessed();
+                    $recovered++;
+                } else {
+                    $stillPending++;
+                }
+            } catch (\Throwable $e) {
+                $errors[] = "row {$row->id}: {$e->getMessage()}";
+                Log::warning('RevenueCat: reconciler row failed', [
+                    'event_id' => $row->id,
+                    'err' => $e->getMessage(),
+                ]);
+            }
+        }
+
+        return [
+            'scanned' => $scanned,
+            'recovered' => $recovered,
+            'still_pending' => $stillPending,
+            'errors' => $errors,
+        ];
     }
 }
