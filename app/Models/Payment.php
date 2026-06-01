@@ -15,8 +15,4 @@ class Payment extends Model
         'config' => 'array',
         'enable' => 'boolean'
     ];
-
-    protected $hidden = [
-        'config',
-    ];
 }

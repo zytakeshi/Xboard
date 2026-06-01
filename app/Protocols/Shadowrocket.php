@@ -93,6 +93,7 @@ class Shadowrocket extends AbstractProtocol
         $config = [
             'tfo' => 1,
             'remark' => $server['name'],
+            'alterId' => 0
         ];
         if ($protocol_settings['tls']) {
             $config['tls'] = 1;
@@ -138,6 +139,7 @@ class Shadowrocket extends AbstractProtocol
         $config = [
             'tfo' => 1,
             'remark' => $server['name'],
+            'alterId' => 0
         ];
 
         // 判断是否开启xtls
@@ -206,7 +208,7 @@ class Shadowrocket extends AbstractProtocol
     {
         $protocol_settings = $server['protocol_settings'];
         $name = rawurlencode($server['name']);
-        $params['allowInsecure'] = (int) data_get($protocol_settings, 'allow_insecure');
+        $params['allowInsecure'] = data_get($protocol_settings, 'allow_insecure');
         if ($serverName = data_get($protocol_settings, 'server_name')) {
             $params['peer'] = $serverName;
         }
