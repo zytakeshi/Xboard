@@ -95,6 +95,7 @@
     "Login to :name": "登入到 :name",
     "Sending frequently, please try again later": "發送頻繁，請稍後再試",
     "Current product is sold out": "當前商品已售罄",
+    "Login is already being processed, please try again shortly.": "登入正在處理中，請稍後重試。",
     "There are too many password errors, please try again after :minute minutes.": "密碼錯誤次數過多，請 :minute 分鐘後再試",
     "Reset failed, Please try again later": "重置失敗，請稍後再試",
     "Subscribe": "訂閱資訊",

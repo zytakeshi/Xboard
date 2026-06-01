@@ -95,6 +95,7 @@
     "Login to :name": "Login to :name",
     "Sending frequently, please try again later": "Sending frequently, please try again later",
     "Current product is sold out": "Current product is sold out",
+    "Login is already being processed, please try again shortly.": "Login is already being processed, please try again shortly.",
     "There are too many password errors, please try again after :minute minutes.": "There are too many password errors, please try again after :minute minutes.",
     "Reset failed, Please try again later": "Reset failed, Please try again later",
     "Subscribe": "Subscribe",

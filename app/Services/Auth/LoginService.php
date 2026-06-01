@@ -9,6 +9,8 @@ use Illuminate\Support\Facades\Cache;
 
 class LoginService
 {
+    private const PASSWORD_ERROR_DEDUPE_SECONDS = 2;
+
     /**
      * 处理用户登录
      *
@@ -18,16 +20,18 @@ class LoginService
      */
     public function login(string $email, string $password): array
     {
+        $passwordLimitKey = $this->passwordErrorLimitKey($email);
+
         // 检查密码错误限制
         if ((int) admin_setting('password_limit_enable', true)) {
-            $passwordErrorCount = (int) Cache::get(CacheKey::get('PASSWORD_ERROR_LIMIT', $email), 0);
-            if ($passwordErrorCount >= (int) admin_setting('password_limit_count', 5)) {
+            $passwordErrorCount = (int) Cache::get($passwordLimitKey, 0);
+            if ($passwordErrorCount >= $this->passwordLimitCount()) {
                 return [
                     false,
                     [
                         429,
                         __('There are too many password errors, please try again after :minute minutes.', [
-                            'minute' => admin_setting('password_limit_expire', 60)
+                            'minute' => $this->passwordLimitMinutes()
                         ])
                     ]
                 ];
@@ -51,12 +55,7 @@ class LoginService
         ) {
             // 增加密码错误计数
             if ((int) admin_setting('password_limit_enable', true)) {
-                $passwordErrorCount = (int) Cache::get(CacheKey::get('PASSWORD_ERROR_LIMIT', $email), 0);
-                Cache::put(
-                    CacheKey::get('PASSWORD_ERROR_LIMIT', $email),
-                    (int) $passwordErrorCount + 1,
-                    60 * (int) admin_setting('password_limit_expire', 60)
-                );
+                $this->recordPasswordError($email, $password, $passwordLimitKey);
             }
             return [false, [400, __('Incorrect email or password')]];
         }
@@ -71,6 +70,71 @@ class LoginService
         $user->save();
 
         return [true, $user];
+    }
+
+    private function recordPasswordError(string $email, string $password, string $passwordLimitKey): void
+    {
+        $dedupeKey = $this->passwordErrorDedupeKey($email, $password);
+        if (!Cache::add($dedupeKey, 1, self::PASSWORD_ERROR_DEDUPE_SECONDS)) {
+            return;
+        }
+
+        $passwordErrorCount = (int) Cache::get($passwordLimitKey, 0);
+        Cache::put(
+            $passwordLimitKey,
+            $passwordErrorCount + 1,
+            $this->passwordLimitSeconds()
+        );
+    }
+
+    private function passwordLimitCount(): int
+    {
+        return max(1, (int) admin_setting('password_limit_count', 5));
+    }
+
+    private function passwordLimitMinutes(): int
+    {
+        return max(1, (int) admin_setting('password_limit_expire', 60));
+    }
+
+    private function passwordLimitSeconds(): int
+    {
+        return 60 * $this->passwordLimitMinutes();
+    }
+
+    private function passwordErrorLimitKey(string $email): string
+    {
+        return CacheKey::get('PASSWORD_ERROR_LIMIT', $this->normalizeEmailForLimit($email));
+    }
+
+    private function passwordErrorDedupeKey(string $email, string $password): string
+    {
+        return CacheKey::get(
+            'PASSWORD_ERROR_DEDUPE',
+            self::credentialFingerprint($email, $password)
+        );
+    }
+
+    public static function loginResponseLockKey(string $email, string $password): string
+    {
+        return CacheKey::get(
+            'LOGIN_RESPONSE_LOCK',
+            self::credentialFingerprint($email, $password)
+        );
+    }
+
+    private static function credentialFingerprint(string $email, string $password): string
+    {
+        return hash_hmac(
+            'sha256',
+            self::normalizeEmailForLimit($email) . "\n" . $password,
+            (string) config('app.key')
+        );
+    }
+
+    private static function normalizeEmailForLimit(string $email): string
+    {
+        return strtolower(trim($email));
     }
 
     /**
