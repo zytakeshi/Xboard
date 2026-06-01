@@ -21,6 +21,7 @@ class ServerSave extends FormRequest
             'tls' => 'required|integer',
             'network' => 'required|string',
             'network_settings' => 'nullable|array',
+            'rules' => 'nullable|array',
             'tls_settings.server_name' => 'nullable|string',
             'tls_settings.allow_insecure' => 'nullable|boolean',
         ],
@@ -65,6 +66,12 @@ class ServerSave extends FormRequest
         'http' => [
             'tls' => 'required|integer',
             'tls_settings' => 'nullable|array',
+        ],
+        'tuic' => [
+            'version' => 'nullable|integer',
+            'congestion_control' => 'nullable|string',
+            'alpn' => 'nullable|array',
+            'udp_relay_mode' => 'nullable|string',
         ],
         'mieru' => [
             'transport' => 'required|string',
