@@ -72,6 +72,8 @@ class ServerSave extends FormRequest
             'congestion_control' => 'nullable|string',
             'alpn' => 'nullable|array',
             'udp_relay_mode' => 'nullable|string',
+            'tls.server_name' => 'nullable|string',
+            'tls.allow_insecure' => 'nullable|boolean',
         ],
         'mieru' => [
             'transport' => 'required|string',

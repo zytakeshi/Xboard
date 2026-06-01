@@ -206,8 +206,8 @@ class Shadowrocket extends AbstractProtocol
     {
         $protocol_settings = $server['protocol_settings'];
         $name = rawurlencode($server['name']);
-        $params['allowInsecure'] = (int) data_get($protocol_settings, 'tls_settings.allow_insecure');
-        if ($serverName = data_get($protocol_settings, 'tls_settings.server_name')) {
+        $params['allowInsecure'] = (int) data_get($protocol_settings, 'allow_insecure');
+        if ($serverName = data_get($protocol_settings, 'server_name')) {
             $params['peer'] = $serverName;
         }
         switch (data_get($protocol_settings, 'network')) {
