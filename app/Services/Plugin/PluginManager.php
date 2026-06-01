@@ -9,6 +9,7 @@ use Illuminate\Support\Facades\View;
 use Illuminate\Support\Facades\Route;
 use Illuminate\Support\Facades\Artisan;
 use Illuminate\Support\Facades\Log;
+use Illuminate\Console\Scheduling\Schedule;
 use Illuminate\Support\Str;
 use Symfony\Component\Finder\Finder;
 
@@ -117,6 +118,86 @@ class PluginManager
         if (File::exists($viewsPath)) {
             View::addNamespace(Str::studly($pluginCode), $viewsPath);
         }
+    }
+
+    /**
+     * Bootstrap enabled plugins during console startup.
+     */
+    public function initializeEnabledPlugins(): void
+    {
+        try {
+            $plugins = Plugin::query()
+                ->where('is_enabled', true)
+                ->get();
+        } catch (\Throwable $e) {
+            Log::warning('Failed to query enabled plugins during bootstrap: ' . $e->getMessage());
+            return;
+        }
+
+        foreach ($plugins as $plugin) {
+            try {
+                $this->bootstrapPlugin($plugin);
+            } catch (\Throwable $e) {
+                Log::error("Failed to initialize plugin {$plugin->code}: " . $e->getMessage());
+            }
+        }
+    }
+
+    /**
+     * Let enabled plugins register scheduled tasks when they expose a hook.
+     */
+    public function registerPluginSchedules(Schedule $schedule): void
+    {
+        try {
+            $plugins = Plugin::query()
+                ->where('is_enabled', true)
+                ->get();
+        } catch (\Throwable $e) {
+            Log::warning('Failed to query enabled plugins for schedule registration: ' . $e->getMessage());
+            return;
+        }
+
+        foreach ($plugins as $pluginRecord) {
+            try {
+                $plugin = $this->loadConfiguredPlugin($pluginRecord);
+                if ($plugin && method_exists($plugin, 'schedule')) {
+                    $plugin->schedule($schedule);
+                }
+                if ($plugin && method_exists($plugin, 'registerSchedules')) {
+                    $plugin->registerSchedules($schedule);
+                }
+            } catch (\Throwable $e) {
+                Log::error(
+                    "Failed to register schedules for plugin {$pluginRecord->code}: " . $e->getMessage()
+                );
+            }
+        }
+    }
+
+    protected function bootstrapPlugin(Plugin $pluginRecord): void
+    {
+        $plugin = $this->loadConfiguredPlugin($pluginRecord);
+        if (!$plugin) {
+            throw new \Exception('Plugin not found: ' . $pluginRecord->code);
+        }
+
+        $this->registerServiceProvider($pluginRecord->code);
+        $this->loadRoutes($pluginRecord->code);
+        $this->loadViews($pluginRecord->code);
+
+        if (method_exists($plugin, 'boot')) {
+            $plugin->boot();
+        }
+    }
+
+    protected function loadConfiguredPlugin(Plugin $pluginRecord)
+    {
+        $plugin = $this->loadPlugin($pluginRecord->code);
+        if ($plugin && !empty($pluginRecord->config)) {
+            $plugin->setConfig(json_decode($pluginRecord->config, true));
+        }
+
+        return $plugin;
     }
 
     /**

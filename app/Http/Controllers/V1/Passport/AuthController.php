@@ -12,9 +12,12 @@ use App\Services\Auth\MailLinkService;
 use App\Services\Auth\RegisterService;
 use App\Services\AuthService;
 use Illuminate\Http\Request;
+use Illuminate\Support\Facades\Cache;
 
 class AuthController extends Controller
 {
+    private const LOGIN_RESPONSE_LOCK_SECONDS = 60;
+
     protected MailLinkService $mailLinkService;
     protected RegisterService $registerService;
     protected LoginService $loginService;
@@ -73,6 +76,7 @@ class AuthController extends Controller
     {
         $email = $request->input('email');
         $password = $request->input('password');
+        $sessionName = $request->input('session_name');
 
         [$success, $result] = $this->loginService->login($email, $password);
 
@@ -80,8 +84,34 @@ class AuthController extends Controller
             return $this->fail($result);
         }
 
-        $authService = new AuthService($result);
-        return $this->success($authService->generateAuthData($request->input('session_name')));
+        $authData = $this->generateLockedAuthData($result, $email, $password, $sessionName);
+        if ($authData === null) {
+            return $this->fail([
+                429001,
+                __('Login is already being processed, please try again shortly.')
+            ]);
+        }
+
+        return $this->success($authData);
+    }
+
+    private function generateLockedAuthData(
+        $user,
+        string $email,
+        string $password,
+        ?string $sessionName
+    ): ?array {
+        $lockKey = LoginService::loginResponseLockKey($email, $password);
+        if (!Cache::add($lockKey, 1, self::LOGIN_RESPONSE_LOCK_SECONDS)) {
+            return null;
+        }
+
+        try {
+            $authService = new AuthService($user);
+            return $authService->generateAuthData($sessionName);
+        } finally {
+            Cache::forget($lockKey);
+        }
     }
 
     /**
