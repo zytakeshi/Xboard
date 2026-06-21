@@ -81,6 +81,8 @@
 
 <body>
   <div id="root"></div>
+  {{-- Adds a "提现/Withdrawal" filter tab to the admin ticket list (no SPA rebuild). --}}
+  <script src="/custom-withdraw-tab.js?v=1"></script>
 </body>
 
 </html>

@@ -80,6 +80,19 @@ class TicketController extends Controller
                 $query->whereHas('user', function ($q) use ($request) {
                     $q->where('email', $request->input('email'));
                 });
+            })
+            ->when($request->boolean('is_withdraw'), function ($query) {
+                // System-generated commission-withdrawal tickets share a fixed (translated)
+                // subject. Match it across every installed locale so the filter is
+                // language-agnostic regardless of which locale a ticket was created under.
+                $key = '[Commission Withdrawal Request] This ticket is opened by the system';
+                $subjects = collect(glob(resource_path('lang/*.json')))
+                    ->map(fn ($path) => __($key, [], pathinfo($path, PATHINFO_FILENAME)))
+                    ->push($key)
+                    ->unique()
+                    ->values()
+                    ->all();
+                $query->whereIn('subject', $subjects);
             });
 
         $this->applyFiltersAndSorts($request, $ticketModel);
@@ -93,7 +106,9 @@ class TicketController extends Controller
         // 获取items然后映射转换
         $items = collect($tickets->items())->map(function ($ticket) {
             $ticketData = $ticket->toArray();
-            $ticketData['user'] = UserController::transformUserData($ticket->user);
+            // A ticket can belong to a since-deleted user (user == null). transformUserData is
+            // type-hinted non-nullable, so guard it or the whole list 500s on that one row.
+            $ticketData['user'] = $ticket->user ? UserController::transformUserData($ticket->user) : null;
             return $ticketData;
         })->all();
 
