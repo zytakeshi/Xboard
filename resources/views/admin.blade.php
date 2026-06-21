@@ -77,6 +77,11 @@
     <script src="/assets/admin/locales/zh-CN.js"></script>
     <script src="/assets/admin/locales/ko-KR.js"></script>
   @endif
+
+  {{-- Confirmation guard before switching device_limit_mode to Strict — a footgun that
+       can mass-disconnect legitimate users by over-counting one device across nodes.
+       Plain static script, runs before the SPA bundle; no build step, no submodule. --}}
+  <script src="/device-limit-strict-guard.js"></script>
 </head>
 
 <body>
